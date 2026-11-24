@@ -1,4 +1,7 @@
+import 'package:dio/dio.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -9,14 +12,15 @@ import '../../../core/widgets/app_network_image.dart';
 import '../../../core/utils/phone_normalizer.dart';
 import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
-import '../../auth/data/app_user.dart';
 import '../../auth/presentation/auth_providers.dart';
 import '../data/app_config.dart';
+import '../data/media_uploader.dart';
 import '../../admin/presentation/admin_copy.dart';
 import 'app_config_providers.dart';
 import '../data/listing.dart';
 import 'listing_copy.dart';
 import 'listings_providers.dart';
+import 'listing_video_player.dart';
 
 class ListingFormScreen extends ConsumerStatefulWidget {
   const ListingFormScreen({this.listing, this.adminMode = false, super.key});
@@ -40,18 +44,27 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
   final _ownerIdController = TextEditingController();
   final _amenityController = TextEditingController();
   final _amenities = <String>[];
+  final _selectedImages = <PickedMediaFile>[];
+  final _imageUploadProgress = <int, double>{};
+  PickedMediaFile? _selectedVideo;
+  bool _removeExistingVideo = false;
+  double? _videoUploadProgress;
+  CancelToken? _videoCancelToken;
+  String? _videoStatusMessage;
   late ListingType _type;
   late ListingPriceUnit _priceUnit;
   String? _category;
   String? _area;
   bool _isSaving = false;
   bool _isDirty = false;
+  Listing? _currentListing;
 
-  bool get _isEditing => widget.listing != null;
+  bool get _isEditing => _currentListing != null;
 
   @override
   void initState() {
     super.initState();
+    _currentListing = widget.listing;
     final listing = widget.listing;
     _titleController.text = listing?.title ?? '';
     _descriptionController.text = listing?.description ?? '';
@@ -91,6 +104,7 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
     _imageUrlsController.dispose();
     _ownerIdController.dispose();
     _amenityController.dispose();
+    _videoCancelToken?.cancel('Listing form closed.');
     super.dispose();
   }
 
@@ -102,13 +116,11 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
     if (mounted) setState(() => _isDirty = true);
   }
 
+
   @override
   Widget build(BuildContext context) {
     final currentUser = ref.watch(currentAppUserProvider).asData?.value;
-    final isAdmin =
-        widget.adminMode &&
-        currentUser?.hasAdminClaim == true &&
-        currentUser?.role == UserRole.admin;
+    final isAdmin = widget.adminMode && currentUser?.canAccessAdmin == true;
     return PopScope(
       canPop: !_isDirty && !_isSaving,
       onPopInvokedWithResult: (didPop, result) async {
@@ -178,7 +190,10 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
                         SizedBox(width: width, child: _priceSection()),
                         SizedBox(width: width, child: _locationSection(config)),
                         SizedBox(width: width, child: _detailsSection()),
-                        SizedBox(width: width, child: _photosSection()),
+                        SizedBox(
+                          width: width,
+                          child: _photosSection(allowDeviceUpload: true),
+                        ),
                         SizedBox(width: width, child: _contactSection(isAdmin)),
                       ],
                     ),
@@ -238,7 +253,7 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
         _bedroomFields(),
         _amenitiesEditor(),
         _phoneField(),
-        _imageUrlsField(),
+        _photosEditor(allowDeviceUpload: true),
         if (isAdmin && !_isEditing) _ownerIdField(),
         if (isAdmin && !_isEditing)
           const Padding(
@@ -296,35 +311,9 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
     ),
   );
 
-  Widget _photosSection() => AdminSectionCard(
+  Widget _photosSection({required bool allowDeviceUpload}) => AdminSectionCard(
     title: AdminCopy.photos,
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _imageUrlsField(),
-        Wrap(
-          spacing: AppSpacing.xs,
-          runSpacing: AppSpacing.xs,
-          children: [
-            for (final url
-                in _imageUrlsController.text
-                    .split(RegExp(r'[\r\n]+'))
-                    .map((value) => value.trim())
-                    .where((value) => value.isNotEmpty)
-                    .take(8))
-              ClipRRect(
-                borderRadius: BorderRadius.circular(AppRadius.sm),
-                child: AppNetworkImage(
-                  imageUrl: url,
-                  semanticLabel: AdminCopy.imagePreview,
-                  width: AppLayout.imagePreviewSize,
-                  height: AppLayout.imagePreviewSize,
-                ),
-              ),
-          ],
-        ),
-      ],
-    ),
+    child: _photosEditor(allowDeviceUpload: allowDeviceUpload),
   );
 
   Widget _contactSection(bool isAdmin) => AdminSectionCard(
@@ -507,6 +496,344 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
     maxLines: 3,
   );
 
+  Widget _photosEditor({required bool allowDeviceUpload}) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      _imageUrlsField(),
+      if (allowDeviceUpload) ...[
+        Wrap(
+          spacing: AppSpacing.sm,
+          runSpacing: AppSpacing.sm,
+          children: [
+            OutlinedButton.icon(
+              onPressed: _isSaving ? null : _pickImages,
+              icon: const Icon(Icons.add_photo_alternate_outlined),
+              label: const Text(ListingCopy.addImages),
+            ),
+            OutlinedButton.icon(
+              onPressed: _isSaving ? null : _pickVideo,
+              icon: const Icon(Icons.video_library_outlined),
+              label: const Text(ListingCopy.addVideo),
+            ),
+          ],
+        ),
+        const Padding(
+          padding: EdgeInsets.only(top: AppSpacing.xs),
+          child: Text(ListingCopy.dragDropHint),
+        ),
+      ],
+      if (_existingImageUrls.isEmpty && _selectedImages.isEmpty)
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: AppSpacing.sm),
+          child: Text(ListingCopy.noImagesSelected),
+        ),
+      if (_existingImageUrls.isNotEmpty || _selectedImages.isNotEmpty)
+        Wrap(
+          spacing: AppSpacing.sm,
+          runSpacing: AppSpacing.sm,
+          children: [
+            for (var index = 0; index < _existingImageUrls.length; index++)
+              _existingImageCard(index, _existingImageUrls[index]),
+            for (var index = 0; index < _selectedImages.length; index++)
+              _selectedImageCard(index, _selectedImages[index]),
+          ],
+        ),
+      const SizedBox(height: AppSpacing.md),
+      if (_selectedVideo == null &&
+          !_removeExistingVideo &&
+          _currentListing?.videoUrl != null) ...[
+        Text(
+          ListingCopy.currentVideo,
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
+        ListingVideoPlayer(
+          videoUrl: _currentListing!.videoUrl,
+        ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: _isSaving ? null : _removeCurrentVideo,
+            icon: const Icon(Icons.delete_outline),
+            label: const Text(ListingCopy.removeVideo),
+          ),
+        ),
+      ],
+      if (_selectedVideo case final video?) ...[
+        Text(
+          '${video.name} (${_formatFileSize(video.sizeInBytes)})',
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+        ListingVideoPlayer(selectedFile: video),
+        if (_videoUploadProgress case final progress?) ...[
+          const SizedBox(height: AppSpacing.xs),
+          LinearProgressIndicator(value: progress.clamp(0, 1)),
+          Text('${ListingCopy.uploadingVideo} ${(progress * 100).round()}%'),
+          TextButton.icon(
+            onPressed: _isSaving ? () => _videoCancelToken?.cancel() : null,
+            icon: const Icon(Icons.cancel_outlined),
+            label: const Text(ListingCopy.cancelUpload),
+          ),
+        ] else
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _isSaving ? null : _removeSelectedVideo,
+              icon: const Icon(Icons.close),
+              label: const Text(ListingCopy.removeSelection),
+            ),
+          ),
+      ],
+      if (_videoStatusMessage case final message?) ...[
+        const SizedBox(height: AppSpacing.xs),
+        Text(
+          message,
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: Theme.of(context).colorScheme.error,
+          ),
+        ),
+      ],
+    ],
+  );
+
+  List<String> get _existingImageUrls => _imageUrlsController.text
+      .split(RegExp(r'[\r\n]+'))
+      .map((value) => value.trim())
+      .where((value) => value.isNotEmpty)
+      .take(ListingMediaValidator.maxImages)
+      .toList(growable: false);
+
+  Widget _existingImageCard(int index, String url) => SizedBox(
+    width: AppLayout.imagePreviewSize + 48,
+    child: Column(
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          child: AppNetworkImage(
+            imageUrl: url,
+            semanticLabel: AdminCopy.imagePreview,
+            width: AppLayout.imagePreviewSize + 48,
+            height: AppLayout.imagePreviewSize,
+          ),
+        ),
+        Wrap(
+          alignment: WrapAlignment.center,
+          children: [
+            IconButton(
+              tooltip: ListingCopy.moveImageEarlier,
+              onPressed: !_isSaving && index > 0
+                  ? () => _moveExistingImage(index, index - 1)
+                  : null,
+              icon: const Icon(Icons.arrow_back),
+            ),
+            IconButton(
+              tooltip: ListingCopy.removeImage,
+              onPressed: _isSaving ? null : () => _removeExistingImage(index),
+              icon: const Icon(Icons.delete_outline),
+            ),
+            IconButton(
+              tooltip: ListingCopy.moveImageLater,
+              onPressed: !_isSaving && index < _existingImageUrls.length - 1
+                  ? () => _moveExistingImage(index, index + 1)
+                  : null,
+              icon: const Icon(Icons.arrow_forward),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+
+  Widget _selectedImageCard(int index, PickedMediaFile image) => SizedBox(
+    width: AppLayout.imagePreviewSize + 48,
+    child: Column(
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          child: Image.memory(
+            image.bytes,
+            width: AppLayout.imagePreviewSize + 48,
+            height: AppLayout.imagePreviewSize,
+            fit: BoxFit.cover,
+            errorBuilder: (context, error, stackTrace) => SizedBox(
+              width: AppLayout.imagePreviewSize + 48,
+              height: AppLayout.imagePreviewSize,
+              child: const Icon(Icons.broken_image_outlined),
+            ),
+          ),
+        ),
+        Text(image.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+        if (_imageUploadProgress[index] case final progress?) ...[
+          const SizedBox(height: AppSpacing.xxs),
+          LinearProgressIndicator(value: progress.clamp(0, 1)),
+          Text('${(progress * 100).round()}%'),
+        ],
+        Wrap(
+          alignment: WrapAlignment.center,
+          children: [
+            IconButton(
+              tooltip: ListingCopy.moveImageEarlier,
+              onPressed: !_isSaving && index > 0
+                  ? () => _moveSelectedImage(index, index - 1)
+                  : null,
+              icon: const Icon(Icons.arrow_back),
+            ),
+            IconButton(
+              tooltip: ListingCopy.removeImage,
+              onPressed: _isSaving ? null : () => _removeSelectedImage(index),
+              icon: const Icon(Icons.delete_outline),
+            ),
+            IconButton(
+              tooltip: ListingCopy.moveImageLater,
+              onPressed: !_isSaving && index < _selectedImages.length - 1
+                  ? () => _moveSelectedImage(index, index + 1)
+                  : null,
+              icon: const Icon(Icons.arrow_forward),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+
+  void _moveExistingImage(int from, int to) {
+    final urls = _existingImageUrls.toList();
+    final image = urls.removeAt(from);
+    urls.insert(to, image);
+    _imageUrlsController.text = urls.join('\n');
+  }
+
+  void _removeExistingImage(int index) {
+    final urls = _existingImageUrls.toList()..removeAt(index);
+    _imageUrlsController.text = urls.join('\n');
+  }
+
+  void _moveSelectedImage(int from, int to) {
+    setState(() {
+      final image = _selectedImages.removeAt(from);
+      _selectedImages.insert(to, image);
+      final progress = _imageUploadProgress.remove(from);
+      if (progress != null) _imageUploadProgress[to] = progress;
+      _isDirty = true;
+    });
+  }
+
+  void _removeSelectedImage(int index) {
+    setState(() {
+      _selectedImages.removeAt(index);
+      _imageUploadProgress.remove(index);
+      _isDirty = true;
+    });
+  }
+
+  void _removeCurrentVideo() {
+    setState(() {
+      _removeExistingVideo = true;
+      _videoStatusMessage = null;
+      _isDirty = true;
+    });
+  }
+
+  void _removeSelectedVideo() {
+    setState(() {
+      _selectedVideo = null;
+      _videoUploadProgress = null;
+      _videoStatusMessage = null;
+      _isDirty = true;
+    });
+  }
+
+  String _formatFileSize(int bytes) {
+    final mebibytes = bytes / (1024 * 1024);
+    return '${mebibytes.toStringAsFixed(1)} MiB';
+  }
+
+  Future<void> _pickImages() async {
+    try {
+      final selected = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['jpg', 'jpeg', 'png', 'webp'],
+      );
+      if (!mounted || selected.isEmpty) return;
+      final currentUrlCount = _imageUrlsController.text
+          .split(RegExp(r'[\r\n]+'))
+          .where((url) => url.trim().isNotEmpty)
+          .length;
+      final hiddenImageCount = _currentListing?.imageStoragePaths
+              .whereType<String>()
+              .length ??
+          0;
+      if (currentUrlCount +
+              hiddenImageCount +
+              _selectedImages.length +
+              selected.length >
+          ListingMediaValidator.maxImages) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text(ListingCopy.maxImages)));
+        return;
+      }
+      final files = <PickedMediaFile>[];
+      for (final file in selected) {
+        final picked = PickedMediaFile(
+          name: file.name,
+          path: file.path,
+          bytes: await file.readAsBytes(),
+        );
+        ListingMediaValidator.imageFormat(picked);
+        files.add(picked);
+      }
+      setState(() {
+        _selectedImages.addAll(files);
+        _isDirty = true;
+      });
+    } on FormatException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error.message)),
+        );
+      }
+    } on PlatformException {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text(ListingCopy.imagePickerError)),
+        );
+      }
+    }
+  }
+
+  Future<void> _pickVideo() async {
+    try {
+      final file = await FilePicker.pickFile(
+        type: FileType.custom,
+        allowedExtensions: const ['mp4', 'webm'],
+      );
+      if (!mounted || file == null) return;
+      final selected = PickedMediaFile(
+        name: file.name,
+        path: file.path,
+        bytes: await file.readAsBytes(),
+      );
+      ListingMediaValidator.videoFormat(selected);
+      setState(() {
+        _selectedVideo = selected;
+        _removeExistingVideo = false;
+        _videoUploadProgress = null;
+        _isDirty = true;
+      });
+    } on FormatException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error.message)),
+        );
+      }
+    } on PlatformException {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text(ListingCopy.videoPickerError)),
+        );
+      }
+    }
+  }
+
   Widget _ownerIdField() => _textField(
     controller: _ownerIdController,
     label: ListingCopy.ownerId,
@@ -563,22 +890,68 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
   Future<void> _save(bool isAdmin) async {
     if (!_formKey.currentState!.validate()) return;
     final normalizedPhone = normalizeUgandanPhone(_phoneController.text);
-    if (normalizedPhone == null) return;
+    if (normalizedPhone == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text(ListingCopy.invalidPhone)),
+      );
+      return;
+    }
 
-    setState(() => _isSaving = true);
+    setState(() {
+      _isSaving = true;
+      _videoStatusMessage = null;
+    });
+    final messenger = ScaffoldMessenger.of(context);
     try {
       final uploader = ref.read(mediaUploaderProvider);
-      final imageUrls = await uploader.uploadImages(
+      final repository = ref.read(listingsRepositoryProvider);
+      final normalizedImageUrls = await uploader.uploadImages(
         _imageUrlsController.text
             .split(RegExp(r'[\r\n]+'))
             .map((url) => url.trim())
             .where((url) => url.isNotEmpty)
             .toList(),
       );
-      final oldListing = widget.listing;
-      final listing = Listing(
+
+      final oldListing = _currentListing;
+      final storagePathsByUrl = <String, String>{};
+      final hiddenStoragePaths = <String>[];
+      if (oldListing != null) {
+        for (var index = 0; index < oldListing.imageUrls.length; index++) {
+          if (index >= oldListing.imageStoragePaths.length) continue;
+          final path = oldListing.imageStoragePaths[index];
+          if (path == null) continue;
+          final url = oldListing.imageUrls[index];
+          if (url.isEmpty) {
+            hiddenStoragePaths.add(path);
+          } else {
+            storagePathsByUrl[url] = path;
+          }
+        }
+      }
+      if (normalizedImageUrls.length +
+              hiddenStoragePaths.length +
+              _selectedImages.length >
+          ListingMediaValidator.maxImages) {
+        throw const FormatException(ListingCopy.maxImages);
+      }
+
+      final previousImagePaths =
+          oldListing?.imageStoragePaths.whereType<String>().toSet() ??
+          const <String>{};
+      final retainedStoragePaths = [
+        for (final url in normalizedImageUrls) storagePathsByUrl[url],
+        ...hiddenStoragePaths,
+      ];
+      final listingImageUrls = [
+        ...normalizedImageUrls,
+        ...List<String>.filled(hiddenStoragePaths.length, ''),
+      ];
+
+      var workingListing = Listing(
         id: oldListing?.id ?? '',
-        ownerId: oldListing?.ownerId ?? _ownerIdController.text.trim(),
+        ownerId: oldListing?.ownerId ??
+            (isAdmin ? _ownerIdController.text.trim() : ''),
         ownerName: oldListing?.ownerName ?? '',
         ownerPhone: normalizedPhone,
         type: _type,
@@ -597,9 +970,11 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
             ? int.tryParse(_bathroomsController.text.trim())
             : null,
         amenities: List.unmodifiable(_amenities),
-        imageUrls: imageUrls,
-        thumbnailUrl: imageUrls.isEmpty ? '' : imageUrls.first,
+        imageUrls: listingImageUrls,
+        imageStoragePaths: retainedStoragePaths,
+        thumbnailUrl: normalizedImageUrls.isEmpty ? '' : normalizedImageUrls.first,
         videoUrl: oldListing?.videoUrl,
+        videoStoragePath: oldListing?.videoStoragePath,
         status: ListingStatus.pending,
         rejectionReason: oldListing?.rejectionReason,
         ratingAvg: oldListing?.ratingAvg ?? 0,
@@ -609,34 +984,176 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
         createdAt: oldListing?.createdAt,
         updatedAt: oldListing?.updatedAt,
       );
-      final repository = ref.read(listingsRepositoryProvider);
-      if (_isEditing) {
-        await repository.update(listing);
-      } else {
-        await repository.create(
-          listing,
+
+      if (!_isEditing) {
+        workingListing = await repository.create(
+          workingListing,
           ownerId: isAdmin ? _ownerIdController.text.trim() : null,
         );
+        if (mounted) {
+          setState(() => _currentListing = workingListing);
+        } else {
+          _currentListing = workingListing;
+        }
       }
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(_isEditing ? ListingCopy.updated : ListingCopy.created),
-        ),
+
+      setState(() => _imageUploadProgress.clear());
+      final uploadedImages = _selectedImages.isEmpty
+          ? const <UploadedListingImage>[]
+          : await uploader.uploadPickedImages(
+              List<PickedMediaFile>.from(_selectedImages),
+              listingId: workingListing.id,
+              ownerId: workingListing.ownerId,
+              onUploadStarted: (index, _) {
+                if (!mounted) return;
+                setState(() => _imageUploadProgress[index] = 0);
+              },
+              onProgress: (index, _, progress) {
+                if (!mounted) return;
+                setState(() => _imageUploadProgress[index] = progress);
+              },
+            );
+
+      UploadedListingVideo? uploadedVideo;
+      final shouldUploadVideo = _selectedVideo != null;
+      final previousVideoPath = oldListing?.videoStoragePath;
+      if (shouldUploadVideo) {
+        final video = _selectedVideo!;
+        _videoCancelToken = CancelToken();
+        if (mounted) {
+          setState(() => _videoUploadProgress = 0);
+        }
+        try {
+          uploadedVideo = await uploader.uploadPickedVideo(
+            video,
+            listingId: workingListing.id,
+            ownerId: workingListing.ownerId,
+            cancelToken: _videoCancelToken!,
+            onProgress: (progress) {
+              if (!mounted) return;
+              setState(() => _videoUploadProgress = progress);
+            },
+          );
+        } finally {
+          _videoCancelToken = null;
+          if (mounted) setState(() => _videoUploadProgress = null);
+        }
+      }
+
+      var nextVideoStoragePath = workingListing.videoStoragePath;
+      var clearVideo = false;
+      if (uploadedVideo != null) {
+        nextVideoStoragePath = uploadedVideo.storagePath;
+      } else if (_removeExistingVideo) {
+        nextVideoStoragePath = null;
+        clearVideo = previousVideoPath != null ||
+            (oldListing?.videoUrl?.trim().isNotEmpty ?? false);
+      }
+
+      final finalImageUrls = [
+        ...workingListing.imageUrls,
+        ...uploadedImages.map((_) => ''),
+      ];
+      final finalImageStoragePaths = [
+        ...workingListing.imageStoragePaths,
+        ...uploadedImages.map((image) => image.storagePath),
+      ];
+      final completeListing = workingListing.copyWith(
+        imageUrls: finalImageUrls,
+        imageStoragePaths: finalImageStoragePaths,
+        thumbnailUrl: normalizedImageUrls.isEmpty
+            ? ''
+            : normalizedImageUrls.first,
+        videoUrl: uploadedVideo?.storagePath ?? nextVideoStoragePath,
+        videoStoragePath: nextVideoStoragePath,
+        clearVideo: clearVideo,
       );
+
+      try {
+        await repository.update(completeListing);
+      } catch (error, stackTrace) {
+        final cleanup = <Future<void>>[];
+        if (uploadedImages.isNotEmpty) {
+          cleanup.add(
+            uploader.deleteImages(
+              uploadedImages.map((image) => image.storagePath).toList(),
+            ),
+          );
+        }
+        if (uploadedVideo != null) {
+          cleanup.add(uploader.deleteVideo(uploadedVideo.storagePath));
+        }
+        if (cleanup.isNotEmpty) {
+          await Future.wait(cleanup.map((future) => future.catchError((_) {})));
+        }
+        Error.throwWithStackTrace(error, stackTrace);
+      }
+
+      final removedImagePaths = previousImagePaths
+          .difference(completeListing.imageStoragePaths.whereType<String>().toSet())
+          .toList();
+      final cleanupWarnings = <String>[];
+      if (removedImagePaths.isNotEmpty) {
+        try {
+          await uploader.deleteImages(removedImagePaths);
+        } on AppException catch (error) {
+          cleanupWarnings.add(
+            '${ListingCopy.imageCleanupWarning} ${error.message}',
+          );
+        }
+      }
+      final shouldDeletePreviousVideo = previousVideoPath != null &&
+          previousVideoPath != completeListing.videoStoragePath &&
+          (uploadedVideo != null || _removeExistingVideo);
+      if (shouldDeletePreviousVideo) {
+        try {
+          await uploader.deleteVideo(previousVideoPath);
+        } on AppException catch (error) {
+          cleanupWarnings.add(
+            '${ListingCopy.videoCleanupWarning} ${error.message}',
+          );
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _selectedImages.clear();
+        _imageUploadProgress.clear();
+        _selectedVideo = null;
+        _removeExistingVideo = false;
+        _videoUploadProgress = null;
+        _videoStatusMessage = null;
+        _currentListing = completeListing;
+        _isDirty = false;
+      });
+      final baseMessage =
+          _isEditing || oldListing != null ? ListingCopy.updated : ListingCopy.created;
+      if (cleanupWarnings.isNotEmpty) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('$baseMessage ${cleanupWarnings.join(' ')}')),
+        );
+      } else {
+        messenger.showSnackBar(SnackBar(content: Text(baseMessage)));
+      }
       context.pop(true);
     } on AppException catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(error.message)));
+        setState(() => _videoStatusMessage = error.message);
+        messenger.showSnackBar(SnackBar(content: Text(error.message)));
       }
     } on FormatException catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(error.message)));
+        setState(() => _videoStatusMessage = error.message);
+        messenger.showSnackBar(SnackBar(content: Text(error.message)));
       }
     } finally {
-      if (mounted) setState(() => _isSaving = false);
+      _videoCancelToken = null;
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
+          _videoUploadProgress = null;
+        });
+      }
     }
   }
 

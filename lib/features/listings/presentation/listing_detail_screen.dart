@@ -16,6 +16,7 @@ import '../../chat/presentation/chat_providers.dart';
 import '../../favorites/presentation/favorite_button.dart';
 import '../data/listing.dart';
 import 'listing_copy.dart';
+import 'listing_video_player.dart';
 import 'listings_providers.dart';
 import 'sign_in_prompt.dart';
 
@@ -32,7 +33,8 @@ class ListingDetailScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final listingState = ref.watch(listingDetailProvider(listingId));
     final user = ref.watch(currentAppUserProvider).asData?.value;
-    final isSignedIn = ref.watch(authStateProvider).asData?.value != null;
+    final isSignedIn =
+        ref.watch(supabaseAuthStateProvider).asData?.value != null;
     return listingState.when(
       loading: () => Scaffold(
         appBar: AppBar(title: const Text(ListingCopy.listingDetails)),
@@ -45,15 +47,13 @@ class ListingDetailScreen extends ConsumerWidget {
         if (listing.status != ListingStatus.approved && !canViewUnapproved) {
           return _unavailable(context);
         }
-        return _detailPage(context, listing, user, isSignedIn);
+        return _detailPage(context, ref, listing, user, isSignedIn);
       },
     );
   }
 
   bool _canViewUnapproved(Listing listing, AppUser? user) =>
-      user != null &&
-      (listing.ownerId == user.uid ||
-          (user.role == UserRole.admin && user.hasAdminClaim));
+      user != null && (listing.ownerId == user.uid || user.canAccessAdmin);
 
   Widget _unavailable(BuildContext context) => Scaffold(
     appBar: AppBar(title: const Text(ListingCopy.listingDetails)),
@@ -88,6 +88,7 @@ class ListingDetailScreen extends ConsumerWidget {
 
   Widget _detailPage(
     BuildContext context,
+    WidgetRef ref,
     Listing listing,
     AppUser? user,
     bool isSignedIn,
@@ -105,7 +106,7 @@ class ListingDetailScreen extends ConsumerWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          actions: [FavoriteButton(listing: listing, isSignedIn: isSignedIn)],
+          actions: [FavoriteButton(listing: listing)],
         ),
         body: SafeArea(
           bottom: false,
@@ -177,6 +178,17 @@ class ListingDetailScreen extends ConsumerWidget {
                                   : listing.description,
                             ),
                           ),
+                          if (listing.videoUrl != null &&
+                              listing.videoUrl!.trim().isNotEmpty)
+                            _DetailSection(
+                              title: ListingCopy.currentVideo,
+                              child: ListingVideoPlayer(
+                                videoUrl: listing.videoUrl,
+                                onRetry: () => ref.invalidate(
+                                  listingDetailProvider(listingId),
+                                ),
+                              ),
+                            ),
                           if (listing.amenities.isNotEmpty)
                             _DetailSection(
                               title: ListingCopy.amenityLabel,
@@ -223,7 +235,7 @@ class ListingDetailScreen extends ConsumerWidget {
                               ),
                               child: Text(
                                 '${ListingCopy.posted} '
-                                '${DateFormat.yMMMd().format(listing.createdAt!.toDate())}',
+                                '${DateFormat.yMMMd().format(listing.createdAt!)}',
                                 style: Theme.of(context).textTheme.bodySmall,
                               ),
                             ),
@@ -473,7 +485,7 @@ class _ContactBar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final digits = _normalizedPhoneDigits(listing.ownerPhone);
     final available = digits != null;
-    final currentUid = ref.watch(authStateProvider).asData?.value?.uid;
+    final currentUid = ref.watch(supabaseAuthStateProvider).asData?.value?.id;
     final cannotChatWithSelf = currentUid == listing.ownerId;
     return SafeArea(
       top: false,
@@ -545,7 +557,7 @@ class _ContactBar extends ConsumerWidget {
   }
 
   Future<void> _openChat(BuildContext context, WidgetRef ref) async {
-    final authUser = ref.read(authStateProvider).asData?.value;
+    final authUser = ref.read(supabaseAuthStateProvider).asData?.value;
     final appUser = ref.read(currentAppUserProvider).asData?.value;
     if (authUser == null || appUser == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -556,7 +568,7 @@ class _ContactBar extends ConsumerWidget {
     try {
       final roomId = await ref
           .read(chatRepositoryProvider)
-          .openRoom(currentUid: authUser.uid, listing: listing);
+          .openRoom(currentUid: authUser.id, listing: listing);
       if (context.mounted) context.go('/chat/$roomId');
     } on AppException catch (error) {
       if (!context.mounted) return;

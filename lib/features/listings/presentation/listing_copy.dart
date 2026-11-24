@@ -16,6 +16,35 @@ abstract final class ListingCopy {
   static const addAmenity = 'Add amenity';
   static const contactPhone = 'Contact phone';
   static const imageUrls = 'Image URLs (one per line)';
+  static const chooseImages = 'Choose images from device';
+  static const addImages = 'Add images';
+  static const addVideo = 'Add video';
+  static const removeImage = 'Remove image';
+  static const removeVideo = 'Remove video';
+  static const removeSelection = 'Remove selected file';
+  static const moveImageEarlier = 'Move image earlier';
+  static const moveImageLater = 'Move image later';
+  static const noImagesSelected = 'No images selected yet.';
+  static const currentVideo = 'Current video';
+  static const uploadingVideo = 'Uploading video';
+  static const cancelUpload = 'Cancel upload';
+  static const retryUpload = 'Retry upload';
+  static const videoPickerError = 'Unable to open the video picker.';
+  static const imageProgressLabel = 'Uploading image';
+  static const adminImageUploadNote =
+      'Administrators can add image URLs. Device uploads are available to listing owners.';
+  static const maxImages = 'A listing can have at most 8 images.';
+  static const maxVideo = 'A listing can have at most 1 video.';
+  static const imagePickerError = 'Unable to open the image picker.';
+  static const videoUploadWarning =
+      'The listing was saved, but the video upload failed:';
+  static const videoCleanupWarning =
+      'Listing saved, but old video cleanup failed:';
+  static const imageUploadWarning = 'The listing was saved, but images failed:';
+  static const imageCleanupWarning =
+      'Listing saved, but old image cleanup failed:';
+  static const dragDropHint =
+      'On web, you can also drag and drop supported files into this area.';
   static const ownerId = 'Owner user ID';
   static const save = 'Save listing';
   static const cancel = 'Cancel';
@@ -61,7 +90,7 @@ abstract final class ListingCopy {
   static const listingRejected = 'Listing rejected.';
   static const moderationReason = 'Rejection reason';
   static const imageUrlHelp =
-      'Image upload uses URLs temporarily. Storage upload will be added after Blaze is enabled.';
+      'Paste public image URLs, or choose images from your device. Up to 8 images total.';
   static const appName = 'Arua City Finder';
   static const searchPublicListings = 'Search homes and local services';
   static const allCategories = 'All';
@@ -155,6 +184,21 @@ abstract final class ListingCopy {
   static const listWithUsAction = 'List with us';
   static const listAccessPending =
       'Landlord and provider accounts need admin approval.';
+  static const roleRequestTitle = 'Request listing access';
+  static const roleRequestMessage =
+      'Choose an account type. You can create listings after an administrator approves your request.';
+  static const requestLandlordRole = 'Request landlord access';
+  static const requestProviderRole = 'Request service provider access';
+  static const roleRequestSubmitted =
+      'Request submitted. You can list after an administrator approves it.';
+  static const roleRequestAlreadyPending =
+      'Your listing access request is awaiting administrator approval.';
+  static const adminClaimRequired =
+      'Admin access is not active. Verify the trusted Supabase Auth claim, then sign out and back in.';
+  static const superAdminClaimRequired =
+      'Super-admin access is not active. Verify app_metadata.super_admin in Supabase Auth, then sign out and back in.';
+  static const accountStillLoading =
+      'Your account is still loading. Please try again.';
   static const about = 'About';
   static const aboutText =
       'Arua City Finder connects the community with local rentals and services.';
