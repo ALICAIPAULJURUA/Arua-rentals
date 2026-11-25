@@ -1069,28 +1069,38 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
         clearVideo: clearVideo,
       );
 
-      try {
-        await repository.update(completeListing);
-      } catch (error, stackTrace) {
-        final cleanup = <Future<void>>[];
-        if (uploadedImages.isNotEmpty) {
-          cleanup.add(
-            uploader.deleteImages(
-              uploadedImages.map((image) => image.storagePath).toList(),
-            ),
-          );
+      final hasNewMedia =
+          uploadedImages.isNotEmpty || uploadedVideo != null || _removeExistingVideo;
+      final needsUpdate = oldListing != null || hasNewMedia;
+      var persistedListing = completeListing;
+      if (needsUpdate) {
+        try {
+          persistedListing = await repository.update(completeListing);
+        } catch (error, stackTrace) {
+          final cleanup = <Future<void>>[];
+          if (uploadedImages.isNotEmpty) {
+            cleanup.add(
+              uploader.deleteImages(
+                uploadedImages.map((image) => image.storagePath).toList(),
+              ),
+            );
+          }
+          if (uploadedVideo != null) {
+            cleanup.add(uploader.deleteVideo(uploadedVideo.storagePath));
+          }
+          if (cleanup.isNotEmpty) {
+            await Future.wait(
+              cleanup.map((future) => future.catchError((_) {})),
+            );
+          }
+          Error.throwWithStackTrace(error, stackTrace);
         }
-        if (uploadedVideo != null) {
-          cleanup.add(uploader.deleteVideo(uploadedVideo.storagePath));
-        }
-        if (cleanup.isNotEmpty) {
-          await Future.wait(cleanup.map((future) => future.catchError((_) {})));
-        }
-        Error.throwWithStackTrace(error, stackTrace);
       }
 
       final removedImagePaths = previousImagePaths
-          .difference(completeListing.imageStoragePaths.whereType<String>().toSet())
+          .difference(
+            persistedListing.imageStoragePaths.whereType<String>().toSet(),
+          )
           .toList();
       final cleanupWarnings = <String>[];
       if (removedImagePaths.isNotEmpty) {
@@ -1103,7 +1113,7 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
         }
       }
       final shouldDeletePreviousVideo = previousVideoPath != null &&
-          previousVideoPath != completeListing.videoStoragePath &&
+          previousVideoPath != persistedListing.videoStoragePath &&
           (uploadedVideo != null || _removeExistingVideo);
       if (shouldDeletePreviousVideo) {
         try {
@@ -1123,11 +1133,12 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
         _removeExistingVideo = false;
         _videoUploadProgress = null;
         _videoStatusMessage = null;
-        _currentListing = completeListing;
+        _currentListing = persistedListing;
         _isDirty = false;
       });
-      final baseMessage =
-          _isEditing || oldListing != null ? ListingCopy.updated : ListingCopy.created;
+      final baseMessage = oldListing != null
+          ? ListingCopy.updated
+          : ListingCopy.created;
       if (cleanupWarnings.isNotEmpty) {
         messenger.showSnackBar(
           SnackBar(content: Text('$baseMessage ${cleanupWarnings.join(' ')}')),
@@ -1145,6 +1156,13 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
       if (mounted) {
         setState(() => _videoStatusMessage = error.message);
         messenger.showSnackBar(SnackBar(content: Text(error.message)));
+      }
+    } catch (error) {
+      if (mounted) {
+        const message =
+            'Unable to save this listing. Check your connection and try again.';
+        setState(() => _videoStatusMessage = message);
+        messenger.showSnackBar(const SnackBar(content: Text(message)));
       }
     } finally {
       _videoCancelToken = null;
