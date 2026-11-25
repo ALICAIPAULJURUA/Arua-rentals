@@ -1,206 +1,263 @@
+import 'dart:convert';
+
+import 'package:arua_rentals/core/errors/app_exception.dart';
 import 'package:arua_rentals/features/admin/data/admin_repository.dart';
 import 'package:arua_rentals/features/auth/data/app_user.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-class _TestAuthUser implements User {
-  @override
-  String get uid => 'admin-uid';
+const _adminId = '5f6563bf-1b9f-45bf-94a4-a19161d3810a';
+const _userId = '7f6563bf-1b9f-45bf-94a4-a19161d3810a';
+const _requestId = '810ac401-4357-414e-834f-269edb122111';
+const _accessToken = 'eyJhbGciOiJub25lIn0.eyJleHAiOjQ3MDAwMDAwMDB9.';
 
-  @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
-}
+http.Response _jsonResponse(
+  http.Request request,
+  Object body, {
+  int status = 200,
+}) => http.Response(
+  jsonEncode(body),
+  status,
+  request: request,
+  headers: const {'content-type': 'application/json'},
+);
 
-class _TestFirebaseAuth implements FirebaseAuth {
-  @override
-  User? get currentUser => _TestAuthUser();
+SupabaseClient _makeClient(
+  Future<http.Response> Function(http.Request request) handler,
+) => SupabaseClient(
+  'https://test-project.supabase.co',
+  'sb_publishable_test',
+  authOptions: const AuthClientOptions(authFlowType: AuthFlowType.implicit),
+  httpClient: MockClient(handler),
+);
 
-  @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+Future<void> _signIn(SupabaseClient client) async {
+  await client.auth.signInWithPassword(
+    email: 'admin@example.test',
+    password: 'valid-test-password',
+  );
 }
 
 void main() {
-  late FakeFirebaseFirestore firestore;
-  late AdminRepository repository;
+  test('approves role requests through the protected atomic RPC', () async {
+    final requests = <http.Request>[];
+    final client = _makeClient((request) async {
+      requests.add(request);
+      if (request.url.path.endsWith('/auth/v1/token')) {
+        return _authResponse(request);
+      }
+      if (request.url.path.endsWith('/rest/v1/role_requests')) {
+        return _jsonResponse(request, [
+          {'requested_role': 'landlord', 'status': 'pending'},
+        ]);
+      }
+      if (request.url.path.endsWith('/rpc/review_role_request')) {
+        return http.Response('', 204, request: request);
+      }
+      return _jsonResponse(request, {
+        'message': 'Unexpected request',
+      }, status: 404);
+    });
+    addTearDown(client.dispose);
+    await _signIn(client);
 
-  setUp(() {
-    firestore = FakeFirebaseFirestore();
-    repository = AdminRepository(
-      firestore: firestore,
-      firebaseAuth: _TestFirebaseAuth(),
-    );
+    await AdminRepository(client: client)
+        .approveRoleRequest(_requestId, RoleRequest.landlord);
+
+    final rpc = requests.last;
+    expect(rpc.method, 'POST');
+    expect(rpc.url.path, endsWith('/rpc/review_role_request'));
+    expect(jsonDecode(rpc.body), {
+      'p_request_id': _requestId,
+      'p_decision': 'approved',
+      'p_rejection_reason': null,
+    });
   });
 
-  Future<void> seedPendingRequest(String uid) async {
-    await firestore.collection('users').doc(uid).set({
-      'name': 'Arua User',
-      'email': '$uid@example.com',
-      'phone': '+256701234567',
-      'role': 'tenant',
-      'roleRequest': 'landlord',
-      'photoUrl': null,
-      'fcmTokens': <String>[],
-      'isVerified': false,
-      'createdAt': Timestamp.now(),
-      'updatedAt': Timestamp.now(),
+  test('validates rejection reasons and sends reviewed request id', () async {
+    final requests = <http.Request>[];
+    final client = _makeClient((request) async {
+      requests.add(request);
+      if (request.url.path.endsWith('/auth/v1/token')) {
+        return _authResponse(request);
+      }
+      if (request.url.path.endsWith('/rpc/review_role_request')) {
+        return http.Response('', 204, request: request);
+      }
+      return _jsonResponse(request, {
+        'message': 'Unexpected request',
+      }, status: 404);
     });
-    await firestore.collection('role_requests').doc(uid).set({
-      'uid': uid,
-      'requestedRole': 'landlord',
-      'status': 'pending',
-      'name': 'Arua User',
-      'email': '$uid@example.com',
-      'phone': '+256701234567',
-      'createdAt': Timestamp.now(),
-      'updatedAt': Timestamp.now(),
-    });
-  }
-
-  test('approval updates the request and user role atomically', () async {
-    await seedPendingRequest('landlord-candidate');
-
-    await repository.approveRoleRequest(
-      'landlord-candidate',
-      RoleRequest.landlord,
-    );
-
-    final request = await firestore
-        .collection('role_requests')
-        .doc('landlord-candidate')
-        .get();
-    final user = await firestore
-        .collection('users')
-        .doc('landlord-candidate')
-        .get();
-    expect(request.data()?['status'], 'approved');
-    expect(request.data()?['reviewedBy'], 'admin-uid');
-    expect(user.data()?['role'], 'landlord');
-    expect(user.data()?.containsKey('roleRequest'), isFalse);
-  });
-
-  test('rejection keeps the profile a tenant and records a reason', () async {
-    await seedPendingRequest('rejected-candidate');
-
-    await repository.rejectRoleRequest(
-      'rejected-candidate',
-      'Please provide more information.',
-    );
-
-    final request = await firestore
-        .collection('role_requests')
-        .doc('rejected-candidate')
-        .get();
-    final user = await firestore
-        .collection('users')
-        .doc('rejected-candidate')
-        .get();
-    expect(request.data()?['status'], 'rejected');
-    expect(
-      request.data()?['rejectionReason'],
-      'Please provide more information.',
-    );
-    expect(user.data()?['role'], 'tenant');
-    expect(user.data()?.containsKey('roleRequest'), isFalse);
-  });
-
-  test('admin dashboard queries return typed role-request records', () async {
-    await seedPendingRequest('pending-candidate');
-
-    final page = await repository.getPendingRoleRequests();
-
-    expect(page.items, hasLength(1));
-    expect(page.items.single.uid, 'pending-candidate');
-    expect(page.items.single.requestedRole, RoleRequest.landlord);
-    expect(page.lastDocument?.id, 'pending-candidate');
-  });
-
-  test('dashboard statistics count users and listing statuses', () async {
-    await seedPendingRequest('pending-user');
-    await firestore.collection('users').doc('second-user').set({
-      'name': 'Second User',
-      'email': 'second@example.com',
-      'phone': '',
-      'role': 'tenant',
-      'isVerified': false,
-      'createdAt': Timestamp.now(),
-    });
-    await firestore.collection('listings').doc('pending-listing').set({
-      'status': 'pending',
-    });
-    await firestore.collection('listings').doc('approved-listing').set({
-      'status': 'approved',
-    });
-    await firestore.collection('listings').doc('rejected-listing').set({
-      'status': 'rejected',
-    });
-
-    final stats = await repository.getDashboardStats();
-
-    expect(stats.totalUsers, 2);
-    expect(stats.pendingRoleRequests, 1);
-    expect(stats.pendingListings, 1);
-    expect(stats.approvedListings, 1);
-    expect(stats.rejectedListings, 1);
-  });
-
-  test('the user management API cannot assign admin role', () async {
-    await firestore.collection('users').doc('target').set({'role': 'tenant'});
+    addTearDown(client.dispose);
+    await _signIn(client);
+    final repository = AdminRepository(client: client);
 
     await expectLater(
-      repository.updateUserRole('target', UserRole.admin),
-      throwsA(isA<Exception>()),
+      repository.rejectRoleRequest(_requestId, ' '),
+      throwsA(isA<AppException>()),
     );
-    expect(
-      (await firestore.collection('users').doc('target').get()).data()?['role'],
-      'tenant',
-    );
+    expect(requests, hasLength(1));
+    await repository.rejectRoleRequest(_requestId, '  Missing documents  ');
+
+    expect(jsonDecode(requests.last.body), {
+      'p_request_id': _requestId,
+      'p_decision': 'rejected',
+      'p_rejection_reason': 'Missing documents',
+    });
   });
 
-  test('verification syncs the profile and every owned listing in chunks', () async {
-    const ownerId = 'verified-owner';
-    await firestore.collection('users').doc(ownerId).set({
-      'isVerified': false,
-    });
-    final listings = firestore.collection('listings');
-    for (var index = 0; index < 401; index++) {
-      await listings.doc('owned-$index').set({
-        'ownerId': ownerId,
-        'ownerVerified': false,
+  test(
+    'blocks non-admin client operations before making data requests',
+    () async {
+      final requests = <http.Request>[];
+      final client = _makeClient((request) async {
+        requests.add(request);
+        if (request.url.path.endsWith('/auth/v1/token')) {
+          return _authResponse(request, admin: false);
+        }
+        return _jsonResponse(request, <Object>[]);
       });
-    }
-    await listings.doc('not-owned').set({
-      'ownerId': 'another-owner',
-      'ownerVerified': false,
-    });
+      addTearDown(client.dispose);
+      await _signIn(client);
+      requests.clear();
 
-    await repository.setUserVerified(ownerId, true);
-
-    expect(
-      (await firestore.collection('users').doc(ownerId).get()).get('isVerified'),
-      isTrue,
-    );
-    for (var index = 0; index < 401; index++) {
-      expect(
-        (await listings.doc('owned-$index').get()).get('ownerVerified'),
-        isTrue,
+      await expectLater(
+        AdminRepository(client: client).getPendingListings(),
+        throwsA(isA<AppException>()),
       );
-    }
-    expect((await listings.doc('not-owned').get()).get('ownerVerified'), isFalse);
-  });
 
-  test('verification status is updated even when the user has no listings', () async {
-    await firestore.collection('users').doc('unlisted-owner').set({
-      'isVerified': false,
+      expect(requests, isEmpty);
+    },
+  );
+
+  test(
+    'does not allow admin role assignment from the Flutter client',
+    () async {
+      final requests = <http.Request>[];
+      final client = _makeClient((request) async {
+        requests.add(request);
+        if (request.url.path.endsWith('/auth/v1/token')) {
+          return _authResponse(request);
+        }
+        return _jsonResponse(request, {'id': _userId});
+      });
+      addTearDown(client.dispose);
+      await _signIn(client);
+      requests.clear();
+
+      await expectLater(
+        AdminRepository(client: client).updateUserRole(_userId, UserRole.admin),
+        throwsA(isA<AppException>()),
+      );
+
+      expect(requests, isEmpty);
+    },
+  );
+
+  test(
+    'blocks administrator grants from accounts without the super-admin claim',
+    () async {
+      final requests = <http.Request>[];
+      final client = _makeClient((request) async {
+        requests.add(request);
+        if (request.url.path.endsWith('/auth/v1/token')) {
+          return _authResponse(request);
+        }
+        return _jsonResponse(request, {'enabled': true});
+      });
+      addTearDown(client.dispose);
+      await _signIn(client);
+      requests.clear();
+
+      await expectLater(
+        AdminRepository(client: client)
+            .setUserAdminAccess(_userId, enabled: true),
+        throwsA(isA<AppException>()),
+      );
+
+      expect(requests, isEmpty);
+    },
+  );
+
+  test('sends admin grants through the protected Edge Function', () async {
+    final requests = <http.Request>[];
+    final client = _makeClient((request) async {
+      requests.add(request);
+      if (request.url.path.endsWith('/auth/v1/token')) {
+        return _authResponse(request, admin: false, superAdmin: true);
+      }
+      if (request.url.path.endsWith('/functions/v1/manage-admin-access')) {
+        return _jsonResponse(request, {
+          'enabled': true,
+          'targetUserId': _userId,
+        });
+      }
+      return _jsonResponse(request, {
+        'message': 'Unexpected request',
+      }, status: 404);
     });
+    addTearDown(client.dispose);
+    await _signIn(client);
+    requests.clear();
 
-    await repository.setUserVerified('unlisted-owner', true);
+    await AdminRepository(client: client)
+        .setUserAdminAccess(_userId, enabled: true);
 
+    expect(requests, hasLength(1));
+    expect(requests.single.method, 'POST');
     expect(
-      (await firestore.collection('users').doc('unlisted-owner').get())
-          .get('isVerified'),
-      isTrue,
+      requests.single.url.path,
+      endsWith('/functions/v1/manage-admin-access'),
     );
+    expect(jsonDecode(requests.single.body), {
+      'targetUserId': _userId,
+      'enabled': true,
+    });
   });
+
+  test(
+    'does not delete only a profile without deleting the Auth account',
+    () async {
+      final requests = <http.Request>[];
+      final client = _makeClient((request) async {
+        requests.add(request);
+        if (request.url.path.endsWith('/auth/v1/token')) {
+          return _authResponse(request);
+        }
+        return _jsonResponse(request, {'id': _userId});
+      });
+      addTearDown(client.dispose);
+      await _signIn(client);
+      requests.clear();
+
+      await expectLater(
+        AdminRepository(client: client).deleteUserProfile(_userId),
+        throwsA(isA<AppException>()),
+      );
+
+      expect(requests, isEmpty);
+    },
+  );
 }
+
+http.Response _authResponse(
+  http.Request request, {
+  bool admin = true,
+  bool superAdmin = false,
+}) => _jsonResponse(request, {
+  'access_token': _accessToken,
+  'refresh_token': 'test-refresh-token',
+  'expires_in': 3600,
+  'token_type': 'bearer',
+  'user': {
+    'id': _adminId,
+    'aud': 'authenticated',
+    'role': 'authenticated',
+    'email': 'admin@example.test',
+    'app_metadata': {'admin': admin, 'super_admin': superAdmin},
+    'user_metadata': <String, dynamic>{},
+    'created_at': '2026-01-01T00:00:00.000Z',
+  },
+});

@@ -56,3 +56,8 @@ android/key.properties
 *.jks
 
 .env
+supabase.local.json
+# Local tool/agent artifacts
+.agents/
+.goose/
+skills-lock.json

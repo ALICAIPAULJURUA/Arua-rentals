@@ -1,12 +1,13 @@
 import 'dart:async';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/errors/app_exception.dart';
 import '../../../core/theme/app_tokens.dart';
+import '../../../core/widgets/app_back_button.dart';
 import '../../../core/widgets/error_view.dart';
+import '../../../core/widgets/fallback_pop_scope.dart';
 import '../../../core/widgets/loading_view.dart';
 import '../../auth/presentation/auth_providers.dart';
 import '../../listings/presentation/listing_copy.dart';
@@ -26,7 +27,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   final _messageController = TextEditingController();
   final _scrollController = ScrollController();
   List<ChatMessage> _olderMessages = const [];
-  DocumentSnapshot<Map<String, dynamic>>? _olderCursor;
+  ChatCursor? _olderCursor;
   bool _loadingOlder = false;
   bool _hasOlder = true;
   bool _sending = false;
@@ -47,7 +48,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   }
 
   Future<void> _markRead() async {
-    final uid = ref.read(authStateProvider).asData?.value?.uid;
+    final uid = ref.read(supabaseAuthStateProvider).asData?.value?.id;
     if (uid == null) return;
     try {
       await ref.read(chatRepositoryProvider).markRead(widget.roomId, uid);
@@ -60,7 +61,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   }
 
   Future<void> _loadOlder(ChatMessagePage page) async {
-    final cursor = _olderCursor ?? page.lastDocument;
+    final cursor = _olderCursor ?? page.nextCursor;
     if (cursor == null || !_hasOlder || _loadingOlder || _loadingFailed) return;
     setState(() => _loadingOlder = true);
     try {
@@ -70,8 +71,8 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       if (!mounted) return;
       setState(() {
         _olderMessages = [..._olderMessages, ...older.items];
-        _olderCursor = older.lastDocument ?? cursor;
-        _hasOlder = older.items.length == ChatRepository.pageSize;
+        _olderCursor = older.nextCursor ?? cursor;
+        _hasOlder = older.nextCursor != null;
         _loadingFailed = false;
       });
     } on Object {
@@ -83,7 +84,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   }
 
   Future<void> _send() async {
-    final uid = ref.read(authStateProvider).asData?.value?.uid;
+    final uid = ref.read(supabaseAuthStateProvider).asData?.value?.id;
     final text = _messageController.text.trim();
     if (uid == null || text.isEmpty || _sending) return;
     setState(() {
@@ -138,7 +139,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
           ),
         );
       }
-      final uid = ref.read(authStateProvider).asData?.value?.uid;
+      final uid = ref.read(supabaseAuthStateProvider).asData?.value?.id;
       final latest = next.asData?.value.items.firstOrNull;
       if (uid != null &&
           latest != null &&
@@ -147,13 +148,21 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
         unawaited(_markRead());
       }
     });
-    return roomState.when(
+    return FallbackPopScope(
+      fallbackRoute: '/chat',
+      child: roomState.when(
       loading: () => Scaffold(
-        appBar: AppBar(title: const Text(ListingCopy.chat)),
+        appBar: AppBar(
+          leading: const AppBackButton(fallbackRoute: '/chat'),
+          title: const Text(ListingCopy.chat),
+        ),
         body: const LoadingView(),
       ),
       error: (error, stackTrace) => Scaffold(
-        appBar: AppBar(title: const Text(ListingCopy.chat)),
+        appBar: AppBar(
+          leading: const AppBackButton(fallbackRoute: '/chat'),
+          title: const Text(ListingCopy.chat),
+        ),
         body: ErrorView(
           message: ListingCopy.chatRoomError,
           retryLabel: ListingCopy.retry,
@@ -161,15 +170,19 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
         ),
       ),
       data: (room) {
-        final uid = ref.watch(authStateProvider).asData?.value?.uid;
+        final uid = ref.watch(supabaseAuthStateProvider).asData?.value?.id;
         if (uid == null || !room.participants.contains(uid)) {
           return Scaffold(
-            appBar: AppBar(title: const Text(ListingCopy.chat)),
+            appBar: AppBar(
+              leading: const AppBackButton(fallbackRoute: '/chat'),
+              title: const Text(ListingCopy.chat),
+            ),
             body: const Center(child: Text(ListingCopy.chatRoomError)),
           );
         }
         return Scaffold(
           appBar: AppBar(
+            leading: const AppBackButton(fallbackRoute: '/chat'),
             title: Text(
               room.listingTitle,
               maxLines: 1,
@@ -291,6 +304,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
           ),
         );
       },
+      ),
     );
   }
 }

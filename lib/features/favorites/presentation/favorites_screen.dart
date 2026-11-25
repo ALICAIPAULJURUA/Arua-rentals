@@ -4,7 +4,9 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/ugx_formatter.dart';
 import '../../../core/theme/app_tokens.dart';
+import '../../../core/widgets/app_back_button.dart';
 import '../../../core/widgets/empty_view.dart';
+import '../../../core/widgets/fallback_pop_scope.dart';
 import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
 import '../../../core/widgets/app_network_image.dart';
@@ -47,9 +49,14 @@ class _FavoritesScreenState extends ConsumerState<FavoritesScreen> {
   @override
   Widget build(BuildContext context) {
     final favorites = ref.watch(favoritesPageProvider);
-    return Scaffold(
-      appBar: AppBar(title: const Text(ListingCopy.favorites)),
-      body: favorites.when(
+    return FallbackPopScope(
+      fallbackRoute: '/',
+      child: Scaffold(
+        appBar: AppBar(
+          leading: const AppBackButton(fallbackRoute: '/'),
+          title: const Text(ListingCopy.favorites),
+        ),
+        body: favorites.when(
         loading: () => const LoadingView(),
         error: (error, stackTrace) => ErrorView(
           message: ListingCopy.favoritesError,
@@ -110,22 +117,20 @@ class _FavoritesScreenState extends ConsumerState<FavoritesScreen> {
           );
         },
       ),
+      ),
     );
   }
 }
 
-class _FavoriteTile extends ConsumerWidget {
+class _FavoriteTile extends StatelessWidget {
   const _FavoriteTile({required this.favorite, required this.onRemove});
 
   final FavoriteListing favorite;
   final VoidCallback onRemove;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final availability = ref.watch(
-      favoriteAvailabilityProvider(favorite.listingId),
-    );
-    final isAvailable = availability.asData?.value == true;
+  Widget build(BuildContext context) {
+    final isAvailable = favorite.isAvailable;
     return Card(
       margin: const EdgeInsets.only(bottom: AppSpacing.sm),
       child: ListTile(

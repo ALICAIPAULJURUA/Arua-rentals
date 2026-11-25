@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -9,6 +8,7 @@ import '../../../core/theme/app_tokens.dart';
 import '../../../core/widgets/admin_widgets.dart';
 import '../../../core/utils/phone_normalizer.dart';
 import '../../auth/data/app_user.dart';
+import '../../auth/presentation/auth_providers.dart';
 import '../data/admin_records.dart';
 import 'admin_copy.dart';
 import 'admin_providers.dart';
@@ -23,7 +23,7 @@ class AdminUsersScreen extends ConsumerStatefulWidget {
 class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
   static const _pageSize = 20;
   final _searchController = TextEditingController();
-  final _cursors = <DocumentSnapshot<Map<String, dynamic>>?>[null];
+  final _cursors = <AdminCursor?>[null];
   late Future<AdminPage<AdminUserRecord>> _pageFuture;
   Timer? _searchDebounce;
   int _pageIndex = 0;
@@ -81,134 +81,141 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      const AdminPageHeader(
-        title: AdminCopy.users,
-        subtitle: AdminCopy.usersSubtitle,
-      ),
-      AdminFilterBar(
-        controller: _searchController,
-        searchLabel: AdminCopy.searchUsers,
-        onSearchChanged: _onSearchChanged,
-        clearSearchLabel: AdminCopy.clearSearch,
-        onClear: () {
-          _searchController.clear();
-          _onSearchChanged('');
-        },
-        filters: [
-          Wrap(
-            spacing: AppSpacing.xs,
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: AppSpacing.xs,
-                  vertical: AppSpacing.md,
+  Widget build(BuildContext context) {
+    final isSuperAdmin =
+        ref.watch(currentAppUserProvider).asData?.value?.isSuperAdmin ?? false;
+    return Column(
+      children: [
+        const AdminPageHeader(
+          title: AdminCopy.users,
+          subtitle: AdminCopy.usersSubtitle,
+        ),
+        AdminFilterBar(
+          controller: _searchController,
+          searchLabel: AdminCopy.searchUsers,
+          onSearchChanged: _onSearchChanged,
+          clearSearchLabel: AdminCopy.clearSearch,
+          onClear: () {
+            _searchController.clear();
+            _onSearchChanged('');
+          },
+          filters: [
+            Wrap(
+              spacing: AppSpacing.xs,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.xs,
+                    vertical: AppSpacing.md,
+                  ),
+                  child: Text(
+                    AdminCopy.filterRole,
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
                 ),
-                child: Text(
-                  AdminCopy.filterRole,
-                  style: Theme.of(context).textTheme.labelLarge,
-                ),
-              ),
-              ChoiceChip(
-                label: const Text(AdminCopy.allRoles),
-                selected: _roleFilter == null,
-                onSelected: (_) => _setRoleFilter(null),
-              ),
-              for (final role in UserRole.values)
                 ChoiceChip(
-                  label: Text(role.name),
-                  selected: _roleFilter == role,
-                  onSelected: (_) => _setRoleFilter(role),
+                  label: const Text(AdminCopy.allRoles),
+                  selected: _roleFilter == null,
+                  onSelected: (_) => _setRoleFilter(null),
                 ),
-            ],
-          ),
-        ],
-      ),
-      const SizedBox(height: AppSpacing.md),
-      Expanded(
-        child: RefreshIndicator(
-          onRefresh: _refresh,
-          child: FutureBuilder<AdminPage<AdminUserRecord>>(
-            future: _pageFuture,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return ListView(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  children: const [
-                    Padding(
-                      padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
-                      child: SizedBox(
-                        height: AppLayout.statePlaceholderHeight,
-                        child: AdminLoadingList(itemCount: 4),
+                for (final role in UserRole.values)
+                  ChoiceChip(
+                    label: Text(role.label),
+                    selected: _roleFilter == role,
+                    onSelected: (_) => _setRoleFilter(role),
+                  ),
+              ],
+            ),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.md),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _refresh,
+            child: FutureBuilder<AdminPage<AdminUserRecord>>(
+              future: _pageFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    children: const [
+                      Padding(
+                        padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
+                        child: SizedBox(
+                          height: AppLayout.statePlaceholderHeight,
+                          child: AdminLoadingList(itemCount: 4),
+                        ),
                       ),
-                    ),
-                  ],
-                );
-              }
-              if (snapshot.hasError) {
+                    ],
+                  );
+                }
+                if (snapshot.hasError) {
+                  return ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          vertical: AppSpacing.xl,
+                        ),
+                        child: AdminErrorState(
+                          message: _errorMessage(snapshot.error),
+                          retryLabel: AdminCopy.retry,
+                          onRetry: () => setState(_loadPage),
+                        ),
+                      ),
+                    ],
+                  );
+                }
+                final page = snapshot.data!;
+                final users = page.items
+                    .where(
+                      (user) => _roleFilter == null || user.role == _roleFilter,
+                    )
+                    .toList();
+                if (users.isEmpty) {
+                  return ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
+                        child: AdminEmptyState(
+                          title: AdminCopy.users,
+                          message: AdminCopy.noUsers,
+                        ),
+                      ),
+                      _pageControls(
+                        canPrevious: _pageIndex > 0,
+                        canNext: page.items.length == _pageSize,
+                      ),
+                    ],
+                  );
+                }
+                final wide =
+                    MediaQuery.sizeOf(context).width >=
+                    AppLayout.wideBreakpoint;
                 return ListView(
                   physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.only(bottom: AppSpacing.lg),
                   children: [
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                        vertical: AppSpacing.xl,
-                      ),
-                      child: AdminErrorState(
-                        message: _errorMessage(snapshot.error),
-                        retryLabel: AdminCopy.retry,
-                        onRetry: () => setState(_loadPage),
-                      ),
-                    ),
-                  ],
-                );
-              }
-              final page = snapshot.data!;
-              final users = page.items
-                  .where(
-                    (user) => _roleFilter == null || user.role == _roleFilter,
-                  )
-                  .toList();
-              if (users.isEmpty) {
-                return ListView(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  children: [
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
-                      child: AdminEmptyState(
-                        title: AdminCopy.users,
-                        message: AdminCopy.noUsers,
-                      ),
-                    ),
+                    ...(wide
+                        ? [_usersTable(users, isSuperAdmin: isSuperAdmin)]
+                        : [
+                            for (final user in users)
+                              _userCard(user, isSuperAdmin: isSuperAdmin),
+                          ]),
                     _pageControls(
                       canPrevious: _pageIndex > 0,
                       canNext: page.items.length == _pageSize,
                     ),
                   ],
                 );
-              }
-              final wide =
-                  MediaQuery.sizeOf(context).width >= AppLayout.wideBreakpoint;
-              return ListView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.only(bottom: AppSpacing.lg),
-                children: [
-                  if (wide)
-                    _usersTable(users)
-                  else
-                    for (final user in users) _userCard(user),
-                  _pageControls(
-                    canPrevious: _pageIndex > 0,
-                    canNext: page.items.length == _pageSize,
-                  ),
-                ],
-              );
-            },
+              },
+            ),
           ),
         ),
-      ),
-    ],
-  );
+      ],
+    );
+  }
 
   void _setRoleFilter(UserRole? role) {
     if (_roleFilter == role) return;
@@ -222,13 +229,17 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
     });
   }
 
-  Widget _usersTable(List<AdminUserRecord> users) => SingleChildScrollView(
+  Widget _usersTable(
+    List<AdminUserRecord> users, {
+    required bool isSuperAdmin,
+  }) => SingleChildScrollView(
     scrollDirection: Axis.horizontal,
     child: DataTable(
       columns: const [
         DataColumn(label: Text(AdminCopy.name)),
         DataColumn(label: Text(AdminCopy.emailAndPhone)),
         DataColumn(label: Text(AdminCopy.role)),
+        DataColumn(label: Text(AdminCopy.accountStatus)),
         DataColumn(label: Text(AdminCopy.actions)),
         DataColumn(label: Text(AdminCopy.verify)),
       ],
@@ -245,8 +256,9 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
                   ),
                 ),
               ),
-              DataCell(RoleBadge(label: user.role.name)),
-              DataCell(_userActions(user)),
+              DataCell(RoleBadge(label: user.role.label)),
+              DataCell(Text(user.accountStatus)),
+              DataCell(_userActions(user, isSuperAdmin: isSuperAdmin)),
               DataCell(
                 StatusBadge(
                   status: user.isVerified
@@ -263,7 +275,7 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
     ),
   );
 
-  Widget _userCard(AdminUserRecord user) => Card(
+  Widget _userCard(AdminUserRecord user, {required bool isSuperAdmin}) => Card(
     child: Padding(
       padding: AppInsets.phonePage,
       child: Column(
@@ -277,7 +289,7 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
               ),
-              RoleBadge(label: user.role.name),
+              RoleBadge(label: user.role.label),
             ],
           ),
           const SizedBox(height: AppSpacing.xxs),
@@ -297,7 +309,8 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
                     ? AdminCopy.verified
                     : AdminCopy.unverified,
               ),
-              _userActions(user),
+              Text('${AdminCopy.accountStatus}: ${user.accountStatus}'),
+              _userActions(user, isSuperAdmin: isSuperAdmin),
             ],
           ),
         ],
@@ -305,57 +318,72 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
     ),
   );
 
-  Widget _userActions(AdminUserRecord user) => PopupMenuButton<String>(
-    tooltip: AdminCopy.actions,
-    enabled: _busyUid != user.uid,
-    onSelected: (action) {
-      if (action == 'verify') _changeVerification(user);
-      if (action == 'edit') _editProfile(user);
-      if (action == 'delete') _deleteProfile(user);
-      if (action.startsWith('role:')) {
-        final roleName = action.substring('role:'.length);
-        final role = UserRole.values.firstWhere(
-          (candidate) => candidate.name == roleName,
-        );
-        _changeRole(user, role);
-      }
-    },
-    itemBuilder: (context) => [
-      if (user.role != UserRole.admin) ...[
-        const PopupMenuItem<String>(
-          enabled: false,
-          child: Text(AdminCopy.changeRole),
-        ),
-        for (final role in const [
-          UserRole.tenant,
-          UserRole.landlord,
-          UserRole.provider,
-        ])
-          PopupMenuItem<String>(
-            value: 'role:${role.name}',
-            enabled: role != user.role,
-            child: Text(role.name),
+  Widget _userActions(AdminUserRecord user, {required bool isSuperAdmin}) {
+    if (user.role == UserRole.superAdmin) {
+      return const Tooltip(
+        message: 'Super admin access is managed through trusted setup.',
+        child: Icon(Icons.lock_outline),
+      );
+    }
+    return PopupMenuButton<String>(
+      tooltip: AdminCopy.actions,
+      enabled: _busyUid != user.uid,
+      onSelected: (action) {
+        if (action == 'verify') _changeVerification(user);
+        if (action == 'edit') _editProfile(user);
+        if (action == 'admin:grant') _changeAdminAccess(user, enabled: true);
+        if (action == 'admin:revoke') _changeAdminAccess(user, enabled: false);
+        if (action.startsWith('role:')) {
+          final roleName = action.substring('role:'.length);
+          final role = UserRole.values.firstWhere(
+            (candidate) => candidate.value == roleName,
+          );
+          _changeRole(user, role);
+        }
+      },
+      itemBuilder: (context) => [
+        if (user.role != UserRole.admin) ...[
+          const PopupMenuItem<String>(
+            enabled: false,
+            child: Text(AdminCopy.changeRole),
           ),
+          for (final role in const [
+            UserRole.tenant,
+            UserRole.landlord,
+            UserRole.provider,
+          ])
+            PopupMenuItem<String>(
+              value: 'role:${role.value}',
+              enabled: role != user.role,
+              child: Text(role.label),
+            ),
+        ],
+        if (isSuperAdmin && user.role != UserRole.admin)
+          const PopupMenuItem<String>(
+            value: 'admin:grant',
+            child: Text(AdminCopy.grantAdminAccess),
+          ),
+        if (isSuperAdmin && user.role == UserRole.admin)
+          const PopupMenuItem<String>(
+            value: 'admin:revoke',
+            child: Text(AdminCopy.revokeAdminAccess),
+          ),
+        PopupMenuItem<String>(
+          value: 'verify',
+          child: Text(
+            user.isVerified ? AdminCopy.unverified : AdminCopy.verified,
+          ),
+        ),
+        if (user.role != UserRole.admin) ...[
+          const PopupMenuItem<String>(
+            value: 'edit',
+            child: Text(AdminCopy.editProfile),
+          ),
+        ],
       ],
-      PopupMenuItem<String>(
-        value: 'verify',
-        child: Text(
-          user.isVerified ? AdminCopy.unverified : AdminCopy.verified,
-        ),
-      ),
-      if (user.role != UserRole.admin) ...[
-        const PopupMenuItem<String>(
-          value: 'edit',
-          child: Text(AdminCopy.editProfile),
-        ),
-        const PopupMenuItem<String>(
-          value: 'delete',
-          child: Text(AdminCopy.deleteProfile),
-        ),
-      ],
-    ],
-    icon: const Icon(Icons.more_vert),
-  );
+      icon: const Icon(Icons.more_vert),
+    );
+  }
 
   Future<void> _editProfile(AdminUserRecord user) async {
     final nameController = TextEditingController(text: user.name);
@@ -411,20 +439,6 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
     );
   }
 
-  Future<void> _deleteProfile(AdminUserRecord user) async {
-    final confirmed = await _confirm(
-      context,
-      title: AdminCopy.deleteProfileQuestion,
-      details: AdminCopy.deleteProfileWarning,
-    );
-    if (confirmed != true) return;
-    await _perform(
-      user.uid,
-      () => ref.read(adminRepositoryProvider).deleteUserProfile(user.uid),
-      successMessage: AdminCopy.profileDeleted,
-    );
-  }
-
   Widget _pageControls({required bool canPrevious, required bool canNext}) =>
       Padding(
         padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
@@ -468,12 +482,32 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
     final confirmed = await _confirm(
       context,
       title: AdminCopy.roleUpdated,
-      details: '${user.name}: ${user.role.name} → ${role.name}',
+      details: '${user.name}: ${user.role.label} → ${role.label}',
     );
     if (confirmed != true) return;
     await _perform(
       user.uid,
       () => ref.read(adminRepositoryProvider).updateUserRole(user.uid, role),
+    );
+  }
+
+  Future<void> _changeAdminAccess(
+    AdminUserRecord user, {
+    required bool enabled,
+  }) async {
+    final confirmed = await _confirm(
+      context,
+      title: enabled ? AdminCopy.grantAdminAccess : AdminCopy.revokeAdminAccess,
+      details: enabled
+          ? 'Grant administrator access to ${user.name}?'
+          : 'Revoke administrator access from ${user.name}? Their previous non-admin role will be restored.',
+    );
+    if (confirmed != true) return;
+    await _perform(
+      user.uid,
+      () => ref
+          .read(adminRepositoryProvider)
+          .setUserAdminAccess(user.uid, enabled: enabled),
     );
   }
 

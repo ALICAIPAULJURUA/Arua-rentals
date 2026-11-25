@@ -22,7 +22,8 @@ class FavoriteButton extends ConsumerWidget {
     final override = ref.watch(favoriteToggleProvider)[listing.id];
     final saved = override ?? status.asData?.value ?? false;
     final authenticated =
-        isSignedIn ?? ref.watch(authStateProvider).asData?.value != null;
+        isSignedIn ??
+        ref.watch(supabaseAuthStateProvider).asData?.value != null;
     return IconButton(
       tooltip: saved ? ListingCopy.removeFavorite : ListingCopy.saveFavorite,
       onPressed: () async {

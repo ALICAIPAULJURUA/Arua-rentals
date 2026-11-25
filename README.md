@@ -5,6 +5,13 @@ A Flutter marketplace for finding rental properties and local housing services i
 providers can publish listings, and administrators moderate the marketplace from a
 dedicated dashboard.
 
+> **Current migration status:** the Flutter runtime now uses Supabase Auth,
+> Postgres, and Storage; Firebase Flutter dependencies and app configuration have
+> been removed. Firebase-specific setup, schema, and testing sections below are
+> historical and must not be used to configure the current app. The Firebase
+> source data has not been imported or deleted; preserve the legacy admin tools
+> until data reconciliation is complete.
+
 The application targets **Android** and **web (PWA)**, with the same codebase also
 building for iOS, macOS, and Windows. It is designed for mid-range Android devices
 and expensive mobile data, so lists are paginated, images are loaded through
@@ -51,14 +58,24 @@ and expensive mobile data, so lists are paginated, images are loaded through
 
 ### Accounts and roles
 
-- Firebase Authentication email/password registration and login.
+- Supabase Auth email/password registration and login.
 - Password reset flow.
-- Automatic `users/{uid}` profile creation on first sign-in.
+- Automatic `profiles` row creation keyed by the Supabase Auth UUID.
 - Role requests: a new user starts as `tenant` and can request `landlord` or
   `provider`. An administrator approves or rejects the request.
-- Admin access requires **both** a `users/{uid}` profile with `role: admin` and
-  the Firebase Auth custom claim `admin: true`. The UI downgrades a profile-only
-  admin to tenant, and Firestore Rules enforce the claim server-side.
+- Admin access requires both `profiles.role = 'admin'` and the trusted Supabase
+  Auth `app_metadata.admin = true` claim. Super-admin access requires
+  `profiles.role = 'super_admin'` and `app_metadata.super_admin = true`.
+- Super admins can grant/revoke administrator access and manage global listing
+  categories and areas. Privileged claims are changed only through trusted
+  server-side Auth Admin API calls; clients cannot assign privileged roles.
+- The initial super-admin must be provisioned by a trusted operator: set the
+  Auth `app_metadata.super_admin` claim through the Auth Admin API, then set the
+  matching profile role. Never perform either change from the Flutter client.
+- Apply `supabase/manual/super_admin_role_access.sql` and deploy
+  `supabase/functions/manage-admin-access` with JWT verification enabled before
+  using super-admin features. These assets have not been applied to production.
+- Database RLS and profile triggers enforce access; UI role checks are UX only.
 - Redirect-aware authentication: protected routes send visitors to
   `/login?redirect=...` and return them safely after sign-in.
 
@@ -304,16 +321,39 @@ flutterfire configure --project=<your-firebase-project-id>
 
 ### Run the app
 
-```powershell
-flutter run -d chrome
-flutter run -d <android-device-id>
+Copy `supabase.local.example.json` to `supabase.local.json` in the repository
+root. Replace the placeholders with the project root URL and its publishable
+key. Find these in the Supabase Dashboard under **Project Settings > API
+Keys** (or the project's **Connect** dialog). The URL must not include
+`/rest/v1/`. `supabase.local.json` is ignored by Git:
+
+```json
+{
+  "SUPABASE_URL": "https://ruxbwidezpmyuzuvtpvx.supabase.co",
+  "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_..."
+}
 ```
+
+Use the local config when starting Flutter. The publishable key is intended for
+client apps; never put a Supabase secret or service-role key in this file. If
+you do not see a publishable key, open **Project Settings > API Keys** in the
+Supabase Dashboard and copy the project's publishable key. Do not copy a secret
+or service-role key.
+
+```powershell
+flutter run -d chrome --dart-define-from-file=supabase.local.json
+flutter run -d <android-device-id> --dart-define-from-file=supabase.local.json
+```
+
+For VS Code, choose **Arua City Finder (Chrome)** in Run and Debug. Running
+without the compile-time configuration displays an instruction screen instead
+of leaving the browser blank.
 
 Other desktop targets:
 
 ```powershell
-flutter run -d windows
-flutter run -d macos
+flutter run -d windows --dart-define-from-file=supabase.local.json
+flutter run -d macos --dart-define-from-file=supabase.local.json
 ```
 
 Linux is not configured in `firebase_options.dart`.

@@ -1,8 +1,8 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/listing.dart';
-import '../data/listings_repository.dart';
+import '../data/listing_sort.dart';
+import '../data/supabase_listings_repository.dart';
 import 'listings_providers.dart';
 
 class ListingsBrowseState {
@@ -13,7 +13,7 @@ class ListingsBrowseState {
     required this.keyword,
     required this.sort,
     required this.hasMore,
-    this.lastDocument,
+    this.nextCursor,
     this.isLoadingMore = false,
     this.loadMoreError,
   });
@@ -24,7 +24,7 @@ class ListingsBrowseState {
   final String? keyword;
   final ListingSort sort;
   final bool hasMore;
-  final DocumentSnapshot<Map<String, dynamic>>? lastDocument;
+  final ListingCursor? nextCursor;
   final bool isLoadingMore;
   final Object? loadMoreError;
 }
@@ -88,7 +88,7 @@ class ListingsBrowseController extends AsyncNotifier<ListingsBrowseState> {
     if (current == null ||
         !current.hasMore ||
         current.isLoadingMore ||
-        current.lastDocument == null) {
+        current.nextCursor == null) {
       return;
     }
     final generation = _requestGeneration;
@@ -100,7 +100,7 @@ class ListingsBrowseController extends AsyncNotifier<ListingsBrowseState> {
         keyword: current.keyword,
         sort: current.sort,
         hasMore: current.hasMore,
-        lastDocument: current.lastDocument,
+        nextCursor: current.nextCursor,
         isLoadingMore: true,
       ),
     );
@@ -109,7 +109,7 @@ class ListingsBrowseController extends AsyncNotifier<ListingsBrowseState> {
           .read(listingsRepositoryProvider)
           .getApprovedListings(
             limit: pageSize,
-            startAfter: current.lastDocument,
+            startAfter: current.nextCursor,
             category: current.category,
             area: current.area,
             keyword: current.keyword,
@@ -123,8 +123,8 @@ class ListingsBrowseController extends AsyncNotifier<ListingsBrowseState> {
           area: current.area,
           keyword: current.keyword,
           sort: current.sort,
-          hasMore: page.items.length == pageSize,
-          lastDocument: page.lastDocument ?? current.lastDocument,
+          hasMore: page.nextCursor != null,
+          nextCursor: page.nextCursor ?? current.nextCursor,
         ),
       );
     } on Object catch (error) {
@@ -137,7 +137,7 @@ class ListingsBrowseController extends AsyncNotifier<ListingsBrowseState> {
           keyword: current.keyword,
           sort: current.sort,
           hasMore: current.hasMore,
-          lastDocument: current.lastDocument,
+          nextCursor: current.nextCursor,
           loadMoreError: error,
         ),
       );
@@ -165,8 +165,8 @@ class ListingsBrowseController extends AsyncNotifier<ListingsBrowseState> {
       area: area,
       keyword: keyword,
       sort: sort,
-      hasMore: page.items.length == pageSize,
-      lastDocument: page.lastDocument,
+      hasMore: page.nextCursor != null,
+      nextCursor: page.nextCursor,
     );
   }
 }

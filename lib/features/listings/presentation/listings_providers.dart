@@ -1,12 +1,12 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../data/listings_repository.dart';
 import '../data/media_uploader.dart';
+import '../data/supabase_listings_repository.dart';
 
-final listingsRepositoryProvider = Provider<ListingsRepository>(
-  (ref) => ListingsRepository(),
+final listingsRepositoryProvider = Provider<SupabaseListingsRepository>(
+  (ref) => SupabaseListingsRepository(),
 );
 
 final mediaUploaderProvider = Provider<MediaUploader>(
-  (ref) => UrlMediaUploader(),
+  (ref) => SupabaseMediaUploader(),
 );

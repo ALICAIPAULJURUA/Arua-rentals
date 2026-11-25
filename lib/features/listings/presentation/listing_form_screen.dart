@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/theme/app_tokens.dart';
 import '../../../core/widgets/admin_widgets.dart';
+import '../../../core/widgets/app_back_button.dart';
 import '../../../core/widgets/app_network_image.dart';
 import '../../../core/utils/phone_normalizer.dart';
 import '../../../core/widgets/error_view.dart';
@@ -121,16 +122,30 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
   Widget build(BuildContext context) {
     final currentUser = ref.watch(currentAppUserProvider).asData?.value;
     final isAdmin = widget.adminMode && currentUser?.canAccessAdmin == true;
+    final fallbackRoute = widget.adminMode ? '/admin' : '/provider';
     return PopScope(
-      canPop: !_isDirty && !_isSaving,
+      canPop: false,
       onPopInvokedWithResult: (didPop, result) async {
-        if (didPop || _isSaving || !_isDirty) return;
-        final discard = await _confirmDiscard();
+        if (didPop || _isSaving) return;
+        final router = GoRouter.maybeOf(context);
+        final navigatorCanPop =
+            router?.canPop() ?? Navigator.of(context).canPop();
+        if (_isDirty) {
+          final discard = await _confirmDiscard();
+          if (!context.mounted || !discard) return;
+        }
         if (!context.mounted) return;
-        if (discard) context.pop(false);
+        if (navigatorCanPop) {
+          context.pop(false);
+        } else {
+          context.go(fallbackRoute);
+        }
       },
       child: Scaffold(
         appBar: AppBar(
+          leading: AppBackButton(
+            fallbackRoute: widget.adminMode ? '/admin' : '/provider',
+          ),
           title: Text(
             _isEditing ? ListingCopy.editTitle : ListingCopy.createTitle,
           ),
@@ -1157,12 +1172,19 @@ class _ListingFormScreenState extends ConsumerState<ListingFormScreen> {
         setState(() => _videoStatusMessage = error.message);
         messenger.showSnackBar(SnackBar(content: Text(error.message)));
       }
-    } catch (error) {
+    } catch (error, stackTrace) {
+      final detail = error.toString().trim();
+      final message = detail.isEmpty
+          ? 'Unable to save this listing. Check your connection and try again.'
+          : 'Unable to save this listing: $detail';
+      assert(() {
+        debugPrint('Listing save failed: $detail');
+        debugPrintStack(stackTrace: stackTrace);
+        return true;
+      }());
       if (mounted) {
-        const message =
-            'Unable to save this listing. Check your connection and try again.';
         setState(() => _videoStatusMessage = message);
-        messenger.showSnackBar(const SnackBar(content: Text(message)));
+        messenger.showSnackBar(SnackBar(content: Text(message)));
       }
     } finally {
       _videoCancelToken = null;

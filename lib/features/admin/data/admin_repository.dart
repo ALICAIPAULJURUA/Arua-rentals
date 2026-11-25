@@ -1,176 +1,176 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../../../core/constants/collection_names.dart';
 import '../../../core/errors/app_exception.dart';
-import '../../../core/errors/firebase_error_mapper.dart';
 import '../../../core/utils/phone_normalizer.dart';
 import '../../auth/data/app_user.dart';
 import 'admin_records.dart';
 
 class AdminRepository {
-  AdminRepository({FirebaseFirestore? firestore, FirebaseAuth? firebaseAuth})
-    : _firestore = firestore ?? FirebaseFirestore.instance,
-      _firebaseAuth = firebaseAuth ?? FirebaseAuth.instance;
+  static const _userSelection =
+      'id, full_name, email, phone, role, is_verified, account_status, created_at';
+  static const _requestSelection =
+      'id, user_id, name, email, phone, requested_role, created_at';
+  static const _listingSelection =
+      'id, title, owner_name, areas(name), created_at';
+  static final _uuidPattern = RegExp(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$',
+  );
 
-  final FirebaseFirestore _firestore;
-  final FirebaseAuth _firebaseAuth;
+  AdminRepository({SupabaseClient? client})
+    : _client = client ?? Supabase.instance.client;
 
-  CollectionReference<Map<String, dynamic>> get _users =>
-      _firestore.collection(CollectionNames.users);
-  CollectionReference<Map<String, dynamic>> get _roleRequests =>
-      _firestore.collection(CollectionNames.roleRequests);
-  CollectionReference<Map<String, dynamic>> get _listings =>
-      _firestore.collection(CollectionNames.listings);
-
-  String get _adminUid {
-    final uid = _firebaseAuth.currentUser?.uid;
-    if (uid == null) {
-      throw const AppException('Sign in with an administrator account first.');
-    }
-    return uid;
-  }
+  final SupabaseClient _client;
 
   Future<AdminPage<AdminRoleRequest>> getPendingRoleRequests({
     int limit = 20,
-    DocumentSnapshot<Map<String, dynamic>>? startAfter,
+    AdminCursor? startAfter,
   }) async {
+    _requireAdmin();
+    _validatePage(limit, startAfter);
     try {
-      var query = _roleRequests
-          .where('status', isEqualTo: 'pending')
-          .orderBy('createdAt', descending: true)
-          .limit(_pageLimit(limit));
-      if (startAfter != null) query = query.startAfterDocument(startAfter);
-      final snapshot = await query.get();
+      var query = _client
+          .from('role_requests')
+          .select(_requestSelection)
+          .eq('status', 'pending');
+      query = _applyCursor(query, startAfter);
+      final rows = await query
+          .order('created_at', ascending: false)
+          .order('id', ascending: false)
+          .limit(limit);
       return AdminPage(
-        items: snapshot.docs.map(AdminRoleRequest.fromSnapshot).toList(),
-        lastDocument: snapshot.docs.isEmpty ? null : snapshot.docs.last,
+        items: rows.map(AdminRoleRequest.fromSupabaseRow).toList(),
+        lastDocument: _lastCursor(rows),
       );
-    } on FirebaseException catch (error) {
-      throw mapFirestoreException(error);
+    } on PostgrestException catch (error) {
+      throw _mapDatabaseError(error, 'load pending role requests');
     }
   }
 
   Future<AdminPage<AdminListingRecord>> getPendingListings({
     int limit = 20,
-    DocumentSnapshot<Map<String, dynamic>>? startAfter,
+    AdminCursor? startAfter,
   }) async {
+    _requireAdmin();
+    _validatePage(limit, startAfter);
     try {
-      var query = _listings
-          .where('status', isEqualTo: 'pending')
-          .orderBy('createdAt', descending: true)
-          .limit(_pageLimit(limit));
-      if (startAfter != null) query = query.startAfterDocument(startAfter);
-      final snapshot = await query.get();
+      var query = _client
+          .from('listings')
+          .select(_listingSelection)
+          .eq('status', 'pending');
+      query = _applyCursor(query, startAfter);
+      final rows = await query
+          .order('created_at', ascending: false)
+          .order('id', ascending: false)
+          .limit(limit);
       return AdminPage(
-        items: snapshot.docs.map(AdminListingRecord.fromSnapshot).toList(),
-        lastDocument: snapshot.docs.isEmpty ? null : snapshot.docs.last,
+        items: rows.map(AdminListingRecord.fromSupabaseRow).toList(),
+        lastDocument: _lastCursor(rows),
       );
-    } on FirebaseException catch (error) {
-      throw mapFirestoreException(error);
+    } on PostgrestException catch (error) {
+      throw _mapDatabaseError(error, 'load pending listings');
     }
   }
 
   Future<AdminDashboardStats> getDashboardStats() async {
+    _requireAdmin();
     try {
-      final counts = await Future.wait([
-        _users.count().get(),
-        _roleRequests.where('status', isEqualTo: 'pending').count().get(),
-        _listings.where('status', isEqualTo: 'pending').count().get(),
-        _listings.where('status', isEqualTo: 'approved').count().get(),
-        _listings.where('status', isEqualTo: 'rejected').count().get(),
+      final counts = await Future.wait<int>([
+        _client.from('profiles').count(),
+        _client.from('role_requests').count().eq('status', 'pending'),
+        _client.from('listings').count().eq('status', 'pending'),
+        _client.from('listings').count().eq('status', 'approved'),
+        _client.from('listings').count().eq('status', 'rejected'),
       ]);
       return AdminDashboardStats(
-        totalUsers: counts[0].count ?? 0,
-        pendingRoleRequests: counts[1].count ?? 0,
-        pendingListings: counts[2].count ?? 0,
-        approvedListings: counts[3].count ?? 0,
-        rejectedListings: counts[4].count ?? 0,
+        totalUsers: counts[0],
+        pendingRoleRequests: counts[1],
+        pendingListings: counts[2],
+        approvedListings: counts[3],
+        rejectedListings: counts[4],
       );
-    } on FirebaseException catch (error) {
-      throw mapFirestoreException(error);
+    } on PostgrestException catch (error) {
+      throw _mapDatabaseError(error, 'load the dashboard');
     }
   }
 
   Future<AdminPage<AdminUserRecord>> listUsers({
     int limit = 20,
-    DocumentSnapshot<Map<String, dynamic>>? startAfter,
-  }) async {
-    try {
-      var query = _users
-          .orderBy('createdAt', descending: true)
-          .limit(_pageLimit(limit));
-      if (startAfter != null) query = query.startAfterDocument(startAfter);
-      final snapshot = await query.get();
-      return AdminPage(
-        items: snapshot.docs.map(AdminUserRecord.fromSnapshot).toList(),
-        lastDocument: snapshot.docs.isEmpty ? null : snapshot.docs.last,
-      );
-    } on FirebaseException catch (error) {
-      throw mapFirestoreException(error);
-    }
-  }
+    AdminCursor? startAfter,
+  }) => _queryUsers(limit: limit, startAfter: startAfter);
 
   Future<AdminPage<AdminUserRecord>> searchUsers(
     String searchTerm, {
     int limit = 20,
-    DocumentSnapshot<Map<String, dynamic>>? startAfter,
-  }) async {
+    AdminCursor? startAfter,
+  }) {
     final term = searchTerm.trim();
-    if (term.isEmpty) {
-      return listUsers(limit: limit, startAfter: startAfter);
-    }
+    if (term.isEmpty) return listUsers(limit: limit, startAfter: startAfter);
+    return _queryUsers(limit: limit, startAfter: startAfter, searchTerm: term);
+  }
+
+  Future<AdminPage<AdminUserRecord>> _queryUsers({
+    required int limit,
+    AdminCursor? startAfter,
+    String? searchTerm,
+  }) async {
+    _requireAdmin();
+    _validatePage(limit, startAfter);
     try {
-      final cappedLimit = _pageLimit(limit);
-      final field = term.contains('@') ? 'email' : 'name';
-      var query = _users
-          .where(field, isGreaterThanOrEqualTo: term)
-          .where(field, isLessThanOrEqualTo: '$term\uf8ff')
-          .orderBy(field)
-          .limit(cappedLimit);
-      if (startAfter != null) query = query.startAfterDocument(startAfter);
-      final snapshot = await query.get();
+      var query = _client.from('profiles').select(_userSelection);
+      if (searchTerm != null) {
+        final escaped = searchTerm
+            .replaceAll(r'\', r'\\')
+            .replaceAll('%', r'\%')
+            .replaceAll('_', r'\_');
+        final field = searchTerm.contains('@') ? 'email' : 'full_name';
+        query = query.ilike(field, '%$escaped%');
+      }
+      query = _applyCursor(query, startAfter);
+      final rows = await query
+          .order('created_at', ascending: false)
+          .order('id', ascending: false)
+          .limit(limit);
       return AdminPage(
-        items: snapshot.docs.map(AdminUserRecord.fromSnapshot).toList(),
-        lastDocument: snapshot.docs.isEmpty ? null : snapshot.docs.last,
+        items: rows.map(AdminUserRecord.fromSupabaseRow).toList(),
+        lastDocument: _lastCursor(rows),
       );
-    } on FirebaseException catch (error) {
-      throw mapFirestoreException(error);
+    } on PostgrestException catch (error) {
+      throw _mapDatabaseError(error, 'search account profiles');
     }
   }
 
-  Future<void> approveRoleRequest(String uid, RoleRequest role) async {
+  Future<void> approveRoleRequest(String requestId, RoleRequest role) async {
+    _requireAdmin();
+    _requireUuid(requestId, 'role request');
     try {
-      final requestRef = _roleRequests.doc(uid);
-      final userRef = _users.doc(uid);
-      final requestSnapshot = await requestRef.get();
-      final data = requestSnapshot.data();
-      if (!requestSnapshot.exists ||
-          data?['status'] != 'pending' ||
-          data?['requestedRole'] != role.name) {
+      final row = await _client
+          .from('role_requests')
+          .select('requested_role,status')
+          .eq('id', requestId)
+          .maybeSingle();
+      if (row == null ||
+          row['status'] != 'pending' ||
+          row['requested_role'] != role.name) {
         throw const AppException(
-          'This role request is no longer pending or the requested role changed.',
+          'This role request is no longer pending or has changed.',
         );
       }
-
-      final batch = _firestore.batch();
-      batch.update(requestRef, {
-        'status': 'approved',
-        'reviewedBy': _adminUid,
-        'reviewedAt': FieldValue.serverTimestamp(),
-      });
-      batch.update(userRef, {
-        'role': role.name,
-        'roleRequest': FieldValue.delete(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-      await batch.commit();
-    } on FirebaseException catch (error) {
-      throw mapFirestoreException(error);
+      await _client.rpc(
+        'review_role_request',
+        params: {
+          'p_request_id': requestId,
+          'p_decision': 'approved',
+          'p_rejection_reason': null,
+        },
+      );
+    } on PostgrestException catch (error) {
+      throw _mapDatabaseError(error, 'approve this role request');
     }
   }
 
-  Future<void> rejectRoleRequest(String uid, String reason) async {
+  Future<void> rejectRoleRequest(String requestId, String reason) async {
+    _requireAdmin();
+    _requireUuid(requestId, 'role request');
     final cleanReason = reason.trim();
     if (cleanReason.isEmpty || cleanReason.length > 500) {
       throw const AppException(
@@ -178,77 +178,79 @@ class AdminRepository {
       );
     }
     try {
-      final requestRef = _roleRequests.doc(uid);
-      final userRef = _users.doc(uid);
-      final requestSnapshot = await requestRef.get();
-      final data = requestSnapshot.data();
-      if (!requestSnapshot.exists || data?['status'] != 'pending') {
-        throw const AppException('This role request is no longer pending.');
-      }
-
-      final batch = _firestore.batch();
-      batch.update(requestRef, {
-        'status': 'rejected',
-        'reviewedBy': _adminUid,
-        'reviewedAt': FieldValue.serverTimestamp(),
-        'rejectionReason': cleanReason,
-      });
-      batch.update(userRef, {
-        'role': 'tenant',
-        'roleRequest': FieldValue.delete(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-      await batch.commit();
-    } on FirebaseException catch (error) {
-      throw mapFirestoreException(error);
+      await _client.rpc(
+        'review_role_request',
+        params: {
+          'p_request_id': requestId,
+          'p_decision': 'rejected',
+          'p_rejection_reason': cleanReason,
+        },
+      );
+    } on PostgrestException catch (error) {
+      throw _mapDatabaseError(error, 'reject this role request');
     }
   }
 
   Future<void> updateUserRole(String uid, UserRole role) async {
-    if (role == UserRole.admin) {
+    _requireAdmin();
+    _requireUuid(uid, 'user');
+    if (role == UserRole.admin || role == UserRole.superAdmin) {
       throw const AppException(
-        'Admin access can only be assigned with the trusted bootstrap tool.',
+        'Administrator access must be managed by a super administrator.',
       );
     }
     try {
-      await _users.doc(uid).update({
-        'role': role.name,
-        'roleRequest': FieldValue.delete(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-    } on FirebaseException catch (error) {
-      throw mapFirestoreException(error);
+      await _client
+          .from('profiles')
+          .update({'role': role.value})
+          .eq('id', uid)
+          .select('id')
+          .single();
+    } on PostgrestException catch (error) {
+      throw _mapDatabaseError(error, 'update the account role');
+    }
+  }
+
+  Future<void> setUserAdminAccess(String uid, {required bool enabled}) async {
+    _requireSuperAdmin();
+    _requireUuid(uid, 'user');
+    final caller = _client.auth.currentUser!;
+    if (uid == caller.id) {
+      throw const AppException(
+        'You cannot change your own administrator access.',
+      );
+    }
+    try {
+      await _client.functions.invoke(
+        'manage-admin-access',
+        body: {'targetUserId': uid, 'enabled': enabled},
+      );
+    } on FunctionException catch (error) {
+      throw AppException(
+        enabled
+            ? 'Unable to grant administrator access.'
+            : 'Unable to revoke administrator access.',
+        code: error.status.toString(),
+      );
     }
   }
 
   Future<void> setUserVerified(String uid, bool isVerified) async {
+    _requireAdmin();
+    _requireUuid(uid, 'user');
     try {
-      final listingSnapshots = await _listings
-          .where('ownerId', isEqualTo: uid)
-          .get();
-      final documents = listingSnapshots.docs;
-      var offset = 0;
-      do {
-        final batch = _firestore.batch();
-        var writeCount = 0;
-        if (offset == 0) {
-          batch.update(_users.doc(uid), {
-            'isVerified': isVerified,
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
-          writeCount++;
-        }
-        final batchEnd = (offset + 400 - writeCount).clamp(0, documents.length);
-        for (; offset < batchEnd; offset++) {
-          batch.update(documents[offset].reference, {
-            'ownerVerified': isVerified,
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
-        }
-        await batch.commit();
-      } while (offset < documents.length);
-    } on FirebaseException catch (error) {
-      throw mapFirestoreException(error);
+      await _client
+          .from('profiles')
+          .update({'is_verified': isVerified})
+          .eq('id', uid)
+          .select('id')
+          .single();
+      await _client
+          .from('listings')
+          .update({'owner_verified': isVerified})
+          .eq('owner_id', uid);
+    } on PostgrestException catch (error) {
+      throw _mapDatabaseError(error, 'update account verification');
     }
   }
 
@@ -257,51 +259,57 @@ class AdminRepository {
     required String name,
     required String phone,
   }) async {
+    _requireAdmin();
+    _requireUuid(uid, 'user');
     final cleanName = name.trim();
-    final cleanPhone = phone.trim().isEmpty ? '' : normalizeUgandanPhone(phone);
-    if (cleanName.isEmpty || cleanName.length > 100 || cleanPhone == null) {
+    final cleanPhone = phone.trim().isEmpty
+        ? null
+        : normalizeUgandanPhone(phone);
+    if (cleanName.isEmpty ||
+        cleanName.length > 100 ||
+        (phone.trim().isNotEmpty && cleanPhone == null)) {
       throw const AppException('Enter a valid name and Ugandan phone number.');
     }
     try {
-      await _users.doc(uid).update({
-        'name': cleanName,
-        'phone': cleanPhone,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-    } on FirebaseException catch (error) {
-      throw mapFirestoreException(error);
+      await _client
+          .from('profiles')
+          .update({'full_name': cleanName, 'phone': cleanPhone})
+          .eq('id', uid)
+          .select('id')
+          .single();
+    } on PostgrestException catch (error) {
+      throw _mapDatabaseError(error, 'update the account profile');
     }
   }
 
   Future<void> deleteUserProfile(String uid) async {
-    try {
-      final user = await _users.doc(uid).get();
-      if (user.data()?['role'] == UserRole.admin.name) {
-        throw const AppException(
-          'An administrator profile cannot be deleted here.',
-        );
-      }
-      // Deleting the Firebase Auth account itself requires the Admin SDK or a
-      // Cloud Function and is intentionally out of scope for this client.
-      await user.reference.delete();
-    } on FirebaseException catch (error) {
-      throw mapFirestoreException(error);
-    }
+    _requireAdmin();
+    _requireUuid(uid, 'user');
+    throw const AppException(
+      'Deleting an Auth account requires a trusted server-side admin endpoint. No profile-only delete was performed.',
+    );
   }
 
   Future<void> approveListing(String listingId) async {
+    _requireAdmin();
+    _requireUuid(listingId, 'listing');
     try {
-      await _listings.doc(listingId).update({
-        'status': 'approved',
-        'rejectionReason': FieldValue.delete(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-    } on FirebaseException catch (error) {
-      throw mapFirestoreException(error);
+      await _client.rpc(
+        'review_listing',
+        params: {
+          'p_listing_id': listingId,
+          'p_status': 'approved',
+          'p_rejection_reason': null,
+        },
+      );
+    } on PostgrestException catch (error) {
+      throw _mapDatabaseError(error, 'approve this listing');
     }
   }
 
   Future<void> rejectListing(String listingId, String reason) async {
+    _requireAdmin();
+    _requireUuid(listingId, 'listing');
     final cleanReason = reason.trim();
     if (cleanReason.isEmpty || cleanReason.length > 500) {
       throw const AppException(
@@ -309,20 +317,78 @@ class AdminRepository {
       );
     }
     try {
-      await _listings.doc(listingId).update({
-        'status': 'rejected',
-        'rejectionReason': cleanReason,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-    } on FirebaseException catch (error) {
-      throw mapFirestoreException(error);
+      await _client.rpc(
+        'review_listing',
+        params: {
+          'p_listing_id': listingId,
+          'p_status': 'rejected',
+          'p_rejection_reason': cleanReason,
+        },
+      );
+    } on PostgrestException catch (error) {
+      throw _mapDatabaseError(error, 'reject this listing');
     }
   }
 
-  int _pageLimit(int limit) {
+  PostgrestFilterBuilder<List<Map<String, dynamic>>> _applyCursor(
+    PostgrestFilterBuilder<List<Map<String, dynamic>>> query,
+    AdminCursor? cursor,
+  ) {
+    if (cursor == null) return query;
+    final timestamp = cursor.createdAt.toUtc().toIso8601String();
+    return query.or(
+      'created_at.lt.$timestamp,'
+      'and(created_at.eq.$timestamp,id.lt.${cursor.id})',
+    );
+  }
+
+  AdminCursor? _lastCursor(List<Map<String, dynamic>> rows) {
+    if (rows.isEmpty) return null;
+    final id = rows.last['id'];
+    final createdAt = rows.last['created_at'];
+    final parsed = createdAt is String ? DateTime.tryParse(createdAt) : null;
+    if (id is! String || parsed == null) {
+      throw const AppException('An admin record contains an invalid cursor.');
+    }
+    return AdminCursor(createdAt: parsed, id: id);
+  }
+
+  void _validatePage(int limit, AdminCursor? cursor) {
     if (limit < 1 || limit > 100) {
       throw const AppException('Page size must be between 1 and 100.');
     }
-    return limit;
+    if (cursor != null) _requireUuid(cursor.id, 'cursor');
+  }
+
+  void _requireAdmin() {
+    final user = _client.auth.currentUser;
+    if (user == null ||
+        (user.appMetadata['admin'] != true &&
+            user.appMetadata['super_admin'] != true)) {
+      throw const AppException('Administrator access is required.');
+    }
+  }
+
+  void _requireSuperAdmin() {
+    final user = _client.auth.currentUser;
+    if (user == null || user.appMetadata['super_admin'] != true) {
+      throw const AppException('Super administrator access is required.');
+    }
+  }
+
+  void _requireUuid(String value, String kind) {
+    if (!_uuidPattern.hasMatch(value)) {
+      throw AppException('The $kind identifier is invalid.');
+    }
+  }
+
+  AppException _mapDatabaseError(PostgrestException error, String operation) {
+    final message = switch (error.code) {
+      '42501' => 'Administrator access is required to $operation.',
+      'P0001' => error.message,
+      '23503' => 'The referenced account or listing no longer exists.',
+      _ => 'Unable to $operation. Please try again.',
+    };
+    return AppException(message, code: error.code);
   }
 }

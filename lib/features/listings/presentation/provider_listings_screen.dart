@@ -1,13 +1,14 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/errors/app_exception.dart';
+import '../../../core/widgets/app_back_button.dart';
 import '../../../core/widgets/empty_view.dart';
+import '../../../core/widgets/fallback_pop_scope.dart';
 import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
 import '../data/listing.dart';
-import '../data/listings_repository.dart';
+import '../data/supabase_listings_repository.dart';
 import 'listing_copy.dart';
 import 'listing_form_screen.dart';
 import 'listings_providers.dart';
@@ -20,10 +21,11 @@ class ProviderListingsScreen extends ConsumerStatefulWidget {
       _ProviderListingsScreenState();
 }
 
-class _ProviderListingsScreenState extends ConsumerState<ProviderListingsScreen> {
+class _ProviderListingsScreenState
+    extends ConsumerState<ProviderListingsScreen> {
   static const _pageSize = 20;
-  late Future<ListingPage> _pageFuture;
-  final _cursors = <DocumentSnapshot<Map<String, dynamic>>?>[null];
+  late Future<SupabaseListingPage> _pageFuture;
+  final _cursors = <ListingCursor?>[null];
   int _pageIndex = 0;
 
   @override
@@ -35,7 +37,7 @@ class _ProviderListingsScreenState extends ConsumerState<ProviderListingsScreen>
   void _loadPage() {
     _pageFuture = ref
         .read(listingsRepositoryProvider)
-        .getOwnerListings(startAfter: _cursors[_pageIndex]);
+        .getOwnerListings(limit: _pageSize, startAfter: _cursors[_pageIndex]);
   }
 
   Future<void> _refresh() async {
@@ -54,11 +56,16 @@ class _ProviderListingsScreenState extends ConsumerState<ProviderListingsScreen>
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text(ListingCopy.providerTitle)),
-    body: RefreshIndicator(
+  Widget build(BuildContext context) => FallbackPopScope(
+    fallbackRoute: '/',
+    child: Scaffold(
+      appBar: AppBar(
+        leading: const AppBackButton(fallbackRoute: '/'),
+        title: const Text(ListingCopy.providerTitle),
+      ),
+      body: RefreshIndicator(
       onRefresh: _refresh,
-      child: FutureBuilder<ListingPage>(
+      child: FutureBuilder<SupabaseListingPage>(
         future: _pageFuture,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
@@ -109,9 +116,9 @@ class _ProviderListingsScreenState extends ConsumerState<ProviderListingsScreen>
                 ),
               _PageControls(
                 canPrevious: _pageIndex > 0,
-                canNext: page.items.length == _pageSize,
+                canNext: page.nextCursor != null,
                 onPrevious: _previousPage,
-                onNext: () => _nextPage(page.lastDocument),
+                onNext: () => _nextPage(page.nextCursor),
               ),
             ],
           );
@@ -123,13 +130,12 @@ class _ProviderListingsScreenState extends ConsumerState<ProviderListingsScreen>
       icon: const Icon(Icons.add),
       label: const Text(ListingCopy.newListing),
     ),
+    ),
   );
 
   Future<void> _openForm({Listing? listing}) async {
     final changed = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
-        builder: (_) => ListingFormScreen(listing: listing),
-      ),
+      MaterialPageRoute(builder: (_) => ListingFormScreen(listing: listing)),
     );
     if (changed == true && mounted) setState(_loadPage);
   }
@@ -158,9 +164,8 @@ class _ProviderListingsScreenState extends ConsumerState<ProviderListingsScreen>
     try {
       await ref.read(listingsRepositoryProvider).delete(listing.id);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text(ListingCopy.deleted)),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text(ListingCopy.deleted)));
         setState(_loadPage);
       }
     } on AppException catch (error) {
@@ -171,10 +176,10 @@ class _ProviderListingsScreenState extends ConsumerState<ProviderListingsScreen>
     }
   }
 
-  void _nextPage(DocumentSnapshot<Map<String, dynamic>>? lastDocument) {
-    if (lastDocument == null) return;
+  void _nextPage(ListingCursor? cursor) {
+    if (cursor == null) return;
     setState(() {
-      _cursors.add(lastDocument);
+      _cursors.add(cursor);
       _pageIndex++;
       _loadPage();
     });

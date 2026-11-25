@@ -1,4 +1,3 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/errors/app_exception.dart';
@@ -14,9 +13,9 @@ final favoriteStatusProvider = FutureProvider.family<bool, String>((
   ref,
   listingId,
 ) async {
-  final user = await ref.watch(authStateProvider.future);
+  final user = await ref.watch(supabaseAuthStateProvider.future);
   if (user == null) return false;
-  return ref.watch(favoritesRepositoryProvider).isSaved(user.uid, listingId);
+  return ref.watch(favoritesRepositoryProvider).isSaved(user.id, listingId);
 });
 
 final favoriteToggleProvider =
@@ -27,12 +26,12 @@ final favoriteToggleProvider =
 class FavoriteToggleController extends Notifier<Map<String, bool>> {
   @override
   Map<String, bool> build() {
-    ref.watch(authStateProvider);
+    ref.watch(supabaseAuthStateProvider);
     return const {};
   }
 
   Future<void> setSaved(Listing listing, {required bool saved}) async {
-    final user = ref.read(authStateProvider).asData?.value;
+    final user = ref.read(supabaseAuthStateProvider).asData?.value;
     if (user == null) {
       throw const AppException('Sign in to save listings.');
     }
@@ -41,7 +40,7 @@ class FavoriteToggleController extends Notifier<Map<String, bool>> {
     try {
       await ref
           .read(favoritesRepositoryProvider)
-          .setSaved(user.uid, listing, saved: saved);
+          .setSaved(user.id, listing, saved: saved);
       ref.invalidate(favoriteStatusProvider(listing.id));
     } on Object {
       if (previous == null) {
@@ -64,14 +63,14 @@ class FavoritesPageState {
   const FavoritesPageState({
     required this.items,
     required this.hasMore,
-    this.lastDocument,
+    this.nextCursor,
     this.isLoadingMore = false,
     this.loadMoreError,
   });
 
   final List<FavoriteListing> items;
   final bool hasMore;
-  final DocumentSnapshot<Map<String, dynamic>>? lastDocument;
+  final FavoriteCursor? nextCursor;
   final bool isLoadingMore;
   final Object? loadMoreError;
 }
@@ -87,11 +86,11 @@ class FavoritesPageController extends AsyncNotifier<FavoritesPageState> {
 
   @override
   Future<FavoritesPageState> build() async {
-    final user = await ref.watch(authStateProvider.future);
+    final user = await ref.watch(supabaseAuthStateProvider.future);
     if (user == null) {
       throw const AppException('Sign in to view saved listings.');
     }
-    return _load(user.uid);
+    return _load(user.id);
   }
 
   Future<void> loadMore() async {
@@ -99,30 +98,30 @@ class FavoritesPageController extends AsyncNotifier<FavoritesPageState> {
     if (current == null ||
         !current.hasMore ||
         current.isLoadingMore ||
-        current.lastDocument == null) {
+        current.nextCursor == null) {
       return;
     }
-    final user = ref.read(authStateProvider).asData?.value;
+    final user = ref.read(supabaseAuthStateProvider).asData?.value;
     if (user == null) return;
     final generation = _generation;
     state = AsyncData(
       FavoritesPageState(
         items: current.items,
         hasMore: current.hasMore,
-        lastDocument: current.lastDocument,
+        nextCursor: current.nextCursor,
         isLoadingMore: true,
       ),
     );
     try {
       final page = await ref
           .read(favoritesRepositoryProvider)
-          .getPage(user.uid, startAfter: current.lastDocument);
+          .getPage(user.id, startAfter: current.nextCursor);
       if (generation != _generation) return;
       state = AsyncData(
         FavoritesPageState(
           items: [...current.items, ...page.items],
-          hasMore: page.items.length == pageSize,
-          lastDocument: page.lastDocument ?? current.lastDocument,
+          hasMore: page.nextCursor != null,
+          nextCursor: page.nextCursor,
         ),
       );
     } on Object catch (error) {
@@ -131,7 +130,7 @@ class FavoritesPageController extends AsyncNotifier<FavoritesPageState> {
         FavoritesPageState(
           items: current.items,
           hasMore: current.hasMore,
-          lastDocument: current.lastDocument,
+          nextCursor: current.nextCursor,
           loadMoreError: error,
         ),
       );
@@ -140,7 +139,7 @@ class FavoritesPageController extends AsyncNotifier<FavoritesPageState> {
 
   Future<void> remove(FavoriteListing favorite) async {
     final current = state.asData?.value;
-    final user = ref.read(authStateProvider).asData?.value;
+    final user = ref.read(supabaseAuthStateProvider).asData?.value;
     if (current == null || user == null) return;
     state = AsyncData(
       FavoritesPageState(
@@ -148,13 +147,13 @@ class FavoritesPageController extends AsyncNotifier<FavoritesPageState> {
             .where((item) => item.listingId != favorite.listingId)
             .toList(growable: false),
         hasMore: current.hasMore,
-        lastDocument: current.lastDocument,
+        nextCursor: current.nextCursor,
       ),
     );
     try {
       await ref
           .read(favoritesRepositoryProvider)
-          .remove(user.uid, favorite.listingId);
+          .remove(user.id, favorite.listingId);
       ref.read(favoriteToggleProvider.notifier).clear(favorite.listingId);
       ref.invalidate(favoriteStatusProvider(favorite.listingId));
     } on Object catch (error) {
@@ -162,7 +161,7 @@ class FavoritesPageController extends AsyncNotifier<FavoritesPageState> {
         FavoritesPageState(
           items: current.items,
           hasMore: current.hasMore,
-          lastDocument: current.lastDocument,
+          nextCursor: current.nextCursor,
           loadMoreError: error,
         ),
       );
@@ -174,11 +173,11 @@ class FavoritesPageController extends AsyncNotifier<FavoritesPageState> {
     _generation++;
     state = const AsyncLoading();
     state = await AsyncValue.guard(() async {
-      final user = await ref.read(authStateProvider.future);
+      final user = await ref.read(supabaseAuthStateProvider.future);
       if (user == null) {
         throw const AppException('Sign in to view saved listings.');
       }
-      return _load(user.uid);
+      return _load(user.id);
     });
   }
 
@@ -188,13 +187,8 @@ class FavoritesPageController extends AsyncNotifier<FavoritesPageState> {
         .getPage(uid, limit: pageSize);
     return FavoritesPageState(
       items: page.items,
-      hasMore: page.items.length == pageSize,
-      lastDocument: page.lastDocument,
+      hasMore: page.nextCursor != null,
+      nextCursor: page.nextCursor,
     );
   }
 }
-
-final favoriteAvailabilityProvider = FutureProvider.family<bool, String>(
-  (ref, listingId) =>
-      ref.watch(favoritesRepositoryProvider).isListingAvailable(listingId),
-);

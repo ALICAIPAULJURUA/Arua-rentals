@@ -14,37 +14,40 @@ import 'package:arua_rentals/features/auth/presentation/register_screen.dart';
 import 'package:arua_rentals/features/chat/presentation/chat_providers.dart';
 import 'package:arua_rentals/features/listings/data/app_config.dart';
 import 'package:arua_rentals/features/listings/data/listing.dart';
-import 'package:arua_rentals/features/listings/data/listings_repository.dart';
+import 'package:arua_rentals/features/listings/data/listing_sort.dart';
 import 'package:arua_rentals/features/listings/presentation/app_config_providers.dart';
 import 'package:arua_rentals/features/listings/presentation/listing_detail_screen.dart';
 import 'package:arua_rentals/features/listings/presentation/public_listings_screen.dart';
 import 'package:arua_rentals/features/listings/presentation/listings_browse_provider.dart';
-import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-class _TestAuthUser implements firebase_auth.User {
-  @override
-  String get uid => 'test-uid';
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
-}
+import 'package:supabase_flutter/supabase_flutter.dart' as supabase;
 
 class _UnauthenticatedRepository implements AuthRepository {
   @override
-  Stream<firebase_auth.User?> get authStateChanges => Stream.value(null);
+  Stream<supabase.User?> get authStateChanges => Stream.value(null);
 
   @override
-  Future<AppUser?> loadUser(String uid, {bool hasAdminClaim = false}) async =>
-      null;
+  Stream<supabase.AuthState> get authEvents => const Stream.empty();
 
   @override
-  Future<AppUser> loadOrCreateUser(firebase_auth.User authUser) =>
+  supabase.User? get currentUser => null;
+
+  @override
+  Future<AppUser?> loadUser(
+    String uid, {
+    bool hasAdminClaim = false,
+    bool hasSuperAdminClaim = false,
+    String? authEmail,
+  }) async => null;
+
+  @override
+  Future<AppUser> loadOrCreateUser(supabase.User authUser) =>
       throw UnimplementedError();
 
   @override
-  Future<AppUser> register({
+  Future<RegistrationResult> register({
     required String email,
     required String password,
     required String name,
@@ -57,11 +60,29 @@ class _UnauthenticatedRepository implements AuthRepository {
       throw UnimplementedError();
 
   @override
+  Future<void> refreshSession() async {}
+
+  @override
   Future<void> logout() async {}
 
   @override
   Future<void> sendPasswordResetEmail(String email) =>
       throw UnimplementedError();
+
+  @override
+  Future<void> updatePassword(String password) => throw UnimplementedError();
+
+  @override
+  Future<AppUser> updateProfile({
+    required String name,
+    required String phone,
+  }) => throw UnimplementedError();
+
+  @override
+  Future<void> requestRole({
+    required AppUser profile,
+    required RoleRequest requestedRole,
+  }) => throw UnimplementedError();
 }
 
 void main() {
@@ -156,6 +177,26 @@ void main() {
     expect(find.textContaining('remain a tenant account'), findsOneWidget);
   });
 
+  testWidgets('List with us preselects a role request during registration', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const AruaCityFinderApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -1200));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('List with us'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(RegisterScreen), findsOneWidget);
+    expect(find.text('Request to join as'), findsOneWidget);
+    expect(find.textContaining('remain a tenant account'), findsOneWidget);
+  });
+
   testWidgets('a signed-in tenant is denied the admin route', (tester) async {
     container.dispose();
     container = _signedInContainer(
@@ -210,7 +251,17 @@ void main() {
 
 ProviderContainer _signedInContainer(AppUser user) => ProviderContainer(
   overrides: [
-    authStateProvider.overrideWith((ref) => Stream.value(_TestAuthUser())),
+    supabaseAuthStateProvider.overrideWith(
+      (ref) => Stream.value(
+        const supabase.User(
+          id: 'test-uid',
+          appMetadata: {},
+          userMetadata: {},
+          aud: 'authenticated',
+          createdAt: '2026-01-01T00:00:00Z',
+        ),
+      ),
+    ),
     currentAppUserProvider.overrideWith((ref) async => user),
     totalUnreadChatsProvider.overrideWithValue(0),
     appConfigProvider.overrideWith(

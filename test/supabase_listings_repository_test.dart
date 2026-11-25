@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 
 import 'package:arua_rentals/core/errors/app_exception.dart';
 import 'package:arua_rentals/features/listings/data/listing.dart';
@@ -867,6 +867,9 @@ void main() {
             {'id': _areaId},
           ]);
         }
+        if (path.endsWith('/rest/v1/listings') && request.method == 'PATCH') {
+          return _jsonResponse(request, {'id': _listingId});
+        }
         if (path.endsWith('/rest/v1/rpc/update_listing_with_images')) {
           return _emptyResponse(request);
         }
@@ -906,22 +909,245 @@ void main() {
     await repository.update(withVideo);
     final persistRequest = requests.lastWhere(
       (request) =>
-          request.url.path.endsWith('/rest/v1/rpc/update_listing_with_images'),
+          request.url.path.endsWith('/rest/v1/listings') &&
+          request.method == 'PATCH',
     );
     final persistBody = jsonDecode(persistRequest.body) as Map<String, dynamic>;
-    final persistListing =
-        persistBody['p_listing_data'] as Map<String, dynamic>;
-    expect(persistListing['video_url'], '$_userId/$_listingId/tour.mp4');
+    expect(persistBody['video_url'], '$_userId/$_listingId/tour.mp4');
 
     final cleared = withVideo.copyWith(clearVideo: true);
     await repository.update(cleared);
     final clearRequest = requests.lastWhere(
       (request) =>
-          request.url.path.endsWith('/rest/v1/rpc/update_listing_with_images'),
+          request.url.path.endsWith('/rest/v1/listings') &&
+          request.method == 'PATCH',
     );
     final clearBody = jsonDecode(clearRequest.body) as Map<String, dynamic>;
-    final clearListing = clearBody['p_listing_data'] as Map<String, dynamic>;
-    expect(clearListing.containsKey('video_url'), isTrue);
-    expect(clearListing['video_url'], isNull);
+    expect(clearBody.containsKey('video_url'), isTrue);
+    expect(clearBody['video_url'], isNull);
   });
+
+  test(
+    'updates a listing without image changes when update RPC is missing',
+    () async {
+      final requests = <http.Request>[];
+      final client = SupabaseClient(
+        'https://test-project.supabase.co',
+        'sb_publishable_test',
+        authOptions: const AuthClientOptions(
+          authFlowType: AuthFlowType.implicit,
+        ),
+        httpClient: MockClient((request) async {
+          requests.add(request);
+          final path = request.url.path;
+          if (path.endsWith('/auth/v1/token')) {
+            return _jsonResponse(request, {
+              'access_token': _accessToken,
+              'refresh_token': 'test-refresh-token',
+              'expires_in': 3600,
+              'token_type': 'bearer',
+              'user': {
+                'id': _userId,
+                'aud': 'authenticated',
+                'role': 'authenticated',
+                'email': _email,
+                'app_metadata': <String, dynamic>{},
+                'user_metadata': <String, dynamic>{},
+                'created_at': '2026-01-01T00:00:00.000Z',
+              },
+            });
+          }
+          if (path.endsWith('/rest/v1/listings') && request.method == 'GET') {
+            return _jsonResponse(request, _listingRow());
+          }
+          if (path.endsWith('/rest/v1/categories')) {
+            return _jsonResponse(request, [
+              {'id': _categoryId},
+            ]);
+          }
+          if (path.endsWith('/rest/v1/areas')) {
+            return _jsonResponse(request, [
+              {'id': _areaId},
+            ]);
+          }
+          if (path.endsWith('/rest/v1/listings') && request.method == 'PATCH') {
+            return _jsonResponse(request, {'id': _listingId});
+          }
+          if (path.endsWith('/rest/v1/rpc/update_listing_with_images')) {
+            return _jsonResponse(request, {
+              'message': 'Could not find the function public.update_listing_with_images',
+              'code': 'PGRST202',
+            }, status: 404);
+          }
+          return _jsonResponse(request, {
+            'message': 'Unexpected request ${request.method} $path',
+          }, status: 404);
+        }),
+      );
+      addTearDown(client.dispose);
+      await _signIn(client);
+
+      final listing = Listing.fromSupabaseRow(_listingRow()).copyWith(
+        title: 'Updated without image change',
+        description: 'Updated description',
+        priceUgx: 400000,
+      );
+      await SupabaseListingsRepository(client: client).update(listing);
+
+      expect(
+        requests.any(
+          (request) =>
+              request.url.path.endsWith('/rest/v1/rpc/update_listing_with_images'),
+        ),
+        isFalse,
+      );
+      final patch = requests.singleWhere(
+        (request) =>
+            request.url.path.endsWith('/rest/v1/listings') &&
+            request.method == 'PATCH',
+      );
+      final body = jsonDecode(patch.body) as Map<String, dynamic>;
+      expect(body['title'], 'Updated without image change');
+      expect(body['description'], 'Updated description');
+      expect(body['price_ugx'], 400000);
+    },
+  );
+
+  test('owner cannot update another user listing', () async {
+    final client = SupabaseClient(
+      'https://test-project.supabase.co',
+      'sb_publishable_test',
+      authOptions: const AuthClientOptions(authFlowType: AuthFlowType.implicit),
+      httpClient: MockClient((request) async {
+        final path = request.url.path;
+        if (path.endsWith('/auth/v1/token')) {
+          return _jsonResponse(request, {
+            'access_token': _accessToken,
+            'refresh_token': 'test-refresh-token',
+            'expires_in': 3600,
+            'token_type': 'bearer',
+            'user': {
+              'id': _userId,
+              'aud': 'authenticated',
+              'role': 'authenticated',
+              'email': _email,
+              'app_metadata': <String, dynamic>{},
+              'user_metadata': <String, dynamic>{},
+              'created_at': '2026-01-01T00:00:00.000Z',
+            },
+          });
+        }
+        if (path.endsWith('/rest/v1/listings') && request.method == 'GET') {
+          return _jsonResponse(request, {
+            ..._listingRow(),
+            'owner_id': '11111111-1111-4111-8111-111111111111',
+          });
+        }
+        return _jsonResponse(request, {'message': 'Unexpected $path'}, status: 404);
+      }),
+    );
+    addTearDown(client.dispose);
+    await _signIn(client);
+
+    await expectLater(
+      SupabaseListingsRepository(client: client).update(
+        Listing.fromSupabaseRow(_listingRow()).copyWith(title: 'Nope'),
+      ),
+      throwsA(
+        isA<AppException>().having(
+          (error) => error.message,
+          'message',
+          contains('own listings'),
+        ),
+      ),
+    );
+  });
+
+  test(
+    'falls back to direct image replacement when update RPC is missing',
+    () async {
+      final requests = <http.Request>[];
+      final client = SupabaseClient(
+        'https://test-project.supabase.co',
+        'sb_publishable_test',
+        authOptions: const AuthClientOptions(
+          authFlowType: AuthFlowType.implicit,
+        ),
+        httpClient: MockClient((request) async {
+          requests.add(request);
+          final path = request.url.path;
+          if (path.endsWith('/auth/v1/token')) {
+            return _jsonResponse(request, {
+              'access_token': _accessToken,
+              'refresh_token': 'test-refresh-token',
+              'expires_in': 3600,
+              'token_type': 'bearer',
+              'user': {
+                'id': _userId,
+                'aud': 'authenticated',
+                'role': 'authenticated',
+                'email': _email,
+                'app_metadata': <String, dynamic>{},
+                'user_metadata': <String, dynamic>{},
+                'created_at': '2026-01-01T00:00:00.000Z',
+              },
+            });
+          }
+          if (path.endsWith('/rest/v1/listings') && request.method == 'GET') {
+            return _jsonResponse(request, _listingRow());
+          }
+          if (path.endsWith('/rest/v1/categories')) {
+            return _jsonResponse(request, [{'id': _categoryId}]);
+          }
+          if (path.endsWith('/rest/v1/areas')) {
+            return _jsonResponse(request, [{'id': _areaId}]);
+          }
+          if (path.endsWith('/rest/v1/rpc/update_listing_with_images')) {
+            return _jsonResponse(request, {
+              'message': 'Could not find the function public.update_listing_with_images',
+              'code': 'PGRST202',
+            }, status: 404);
+          }
+          if (path.endsWith('/rest/v1/listings') && request.method == 'PATCH') {
+            return _jsonResponse(request, {'id': _listingId});
+          }
+          if (path.endsWith('/rest/v1/listing_images') && request.method == 'DELETE') {
+            return _emptyResponse(request);
+          }
+          if (path.endsWith('/rest/v1/listing_images') && request.method == 'POST') {
+            return _emptyResponse(request);
+          }
+          return _jsonResponse(request, {'message': 'Unexpected ${request.method} $path'}, status: 404);
+        }),
+      );
+      addTearDown(client.dispose);
+      await _signIn(client);
+
+      final listing = Listing.fromSupabaseRow(_listingRow()).copyWith(
+        title: 'Updated title',
+        imageUrls: const ['https://images.example.test/new-room.jpg'],
+        imageStoragePaths: const [null],
+        thumbnailUrl: 'https://images.example.test/new-room.jpg',
+      );
+      await SupabaseListingsRepository(client: client).update(listing);
+
+      expect(
+        requests.any((r) => r.url.path.endsWith('/rest/v1/rpc/update_listing_with_images')),
+        isTrue,
+      );
+      expect(
+        requests.any((r) => r.url.path.endsWith('/rest/v1/listings') && r.method == 'PATCH'),
+        isTrue,
+      );
+      expect(
+        requests.any((r) => r.url.path.endsWith('/rest/v1/listing_images') && r.method == 'DELETE'),
+        isTrue,
+      );
+      expect(
+        requests.any((r) => r.url.path.endsWith('/rest/v1/listing_images') && r.method == 'POST'),
+        isTrue,
+      );
+    },
+  );
 }
+

@@ -1,4 +1,3 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -20,7 +19,7 @@ class RoleRequestsScreen extends ConsumerStatefulWidget {
 class _RoleRequestsScreenState extends ConsumerState<RoleRequestsScreen> {
   static const _pageSize = 20;
   late Future<AdminPage<AdminRoleRequest>> _pageFuture;
-  final _cursors = <DocumentSnapshot<Map<String, dynamic>>?>[null];
+  final _cursors = <AdminCursor?>[null];
   int _pageIndex = 0;
   String? _busyUid;
 
@@ -86,7 +85,7 @@ class _RoleRequestsScreenState extends ConsumerState<RoleRequestsScreen> {
                   for (final request in page.items)
                     _RoleRequestCard(
                       request: request,
-                      isBusy: _busyUid == request.uid,
+                      isBusy: _busyUid == request.id,
                       onApprove: () => _approve(request),
                       onReject: () => _reject(request),
                     ),
@@ -112,7 +111,7 @@ class _RoleRequestsScreenState extends ConsumerState<RoleRequestsScreen> {
     ],
   );
 
-  void _nextPage(DocumentSnapshot<Map<String, dynamic>>? lastDocument) {
+  void _nextPage(AdminCursor? lastDocument) {
     if (lastDocument == null) return;
     setState(() {
       _cursors.add(lastDocument);
@@ -139,10 +138,10 @@ class _RoleRequestsScreenState extends ConsumerState<RoleRequestsScreen> {
     );
     if (confirmed != true) return;
     await _perform(
-      request.uid,
+      request.id,
       () => ref
           .read(adminRepositoryProvider)
-          .approveRoleRequest(request.uid, request.requestedRole),
+          .approveRoleRequest(request.id, request.requestedRole),
     );
   }
 
@@ -157,10 +156,10 @@ class _RoleRequestsScreenState extends ConsumerState<RoleRequestsScreen> {
     );
     if (reason == null) return;
     await _perform(
-      request.uid,
+      request.id,
       () => ref
           .read(adminRepositoryProvider)
-          .rejectRoleRequest(request.uid, reason),
+          .rejectRoleRequest(request.id, reason),
     );
   }
 

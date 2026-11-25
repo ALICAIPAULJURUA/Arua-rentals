@@ -4,9 +4,6 @@ import java.util.Properties
 plugins {
     id("com.android.application")
 
-    // Firebase Google Services
-    id("com.google.gms.google-services")
-
     // Flutter Gradle Plugin
     id("dev.flutter.flutter-gradle-plugin")
 }

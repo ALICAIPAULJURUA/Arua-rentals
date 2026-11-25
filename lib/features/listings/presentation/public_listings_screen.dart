@@ -18,8 +18,8 @@ import 'listing_card.dart';
 import 'listing_copy.dart';
 import 'listing_empty_state.dart';
 import '../data/listing.dart';
+import '../data/listing_sort.dart';
 import 'listings_browse_provider.dart';
-import '../data/listings_repository.dart';
 
 class PublicListingsScreen extends ConsumerStatefulWidget {
   const PublicListingsScreen({super.key});
@@ -115,7 +115,8 @@ class _PublicListingsScreenState extends ConsumerState<PublicListingsScreen> {
   Widget build(BuildContext context) {
     final browse = ref.watch(listingsBrowseProvider);
     final user = ref.watch(currentAppUserProvider).asData?.value;
-    final isSignedIn = ref.watch(authStateProvider).asData?.value != null;
+    final isSignedIn =
+        ref.watch(supabaseAuthStateProvider).asData?.value != null;
     final config = ref.watch(appConfigProvider);
     final featured = ref.watch(featuredListingsProvider);
     return Title(
@@ -136,7 +137,18 @@ class _PublicListingsScreenState extends ConsumerState<PublicListingsScreen> {
               ),
             ],
           ),
-          actions: [_AccountActions(user: user)],
+          actions: [
+            if (user?.canAccessAdmin == true)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),
+                child: FilledButton.tonalIcon(
+                  onPressed: () => context.go('/admin'),
+                  icon: const Icon(Icons.dashboard_outlined),
+                  label: const Text(ListingCopy.admin),
+                ),
+              ),
+            _AccountActions(user: user),
+          ],
         ),
         body: RefreshIndicator(
           onRefresh: () async {
@@ -561,24 +573,98 @@ class _PublicListingsScreenState extends ConsumerState<PublicListingsScreen> {
         ),
       );
 
-  void _openListingSignup(
+  Future<void> _openListingSignup(
     BuildContext context,
     AppUser? user,
     bool isSignedIn,
-  ) {
+  ) async {
     if (!isSignedIn) {
       context.go(
-        Uri(path: '/register', queryParameters: {'redirect': '/'}).toString(),
+        Uri(
+          path: '/register',
+          queryParameters: {'redirect': '/', 'requestListingRole': 'true'},
+        ).toString(),
       );
       return;
     }
-    if (user?.role == UserRole.landlord || user?.role == UserRole.provider) {
+    if (user == null) {
+      final error = ref.read(currentAppUserProvider).error;
+      final message = error is AppException
+          ? error.message
+          : ListingCopy.accountStillLoading;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
+      return;
+    }
+    if (user.role == UserRole.superAdmin && !user.hasSuperAdminClaim) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text(ListingCopy.superAdminClaimRequired)),
+      );
+      return;
+    }
+    if (user.role == UserRole.admin && !user.hasAdminClaim) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text(ListingCopy.adminClaimRequired)),
+      );
+      return;
+    }
+    if (user.isSuperAdmin) {
       context.go('/provider');
       return;
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text(ListingCopy.listAccessPending)),
+    if (user.canAccessAdmin) {
+      context.go('/admin');
+      return;
+    }
+    if (user.role == UserRole.landlord || user.role == UserRole.provider) {
+      context.go('/provider');
+      return;
+    }
+    if (user.roleRequest != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text(ListingCopy.roleRequestAlreadyPending)),
+      );
+      return;
+    }
+
+    final requestedRole = await showDialog<RoleRequest>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text(ListingCopy.roleRequestTitle),
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(24, 0, 24, 12),
+            child: Text(ListingCopy.roleRequestMessage),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, RoleRequest.landlord),
+            child: const Text(ListingCopy.requestLandlordRole),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, RoleRequest.provider),
+            child: const Text(ListingCopy.requestProviderRole),
+          ),
+        ],
+      ),
     );
+    if (requestedRole == null || !context.mounted) return;
+
+    try {
+      await ref
+          .read(authRepositoryProvider)
+          .requestRole(profile: user, requestedRole: requestedRole);
+      ref.invalidate(currentAppUserProvider);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text(ListingCopy.roleRequestSubmitted)),
+        );
+      }
+    } on AppException catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.message)));
+      }
+    }
   }
 
   PopupMenuItem<ListingSort> _sortItem(ListingSort sort, String label) =>
@@ -791,9 +877,11 @@ class _AccountActions extends ConsumerWidget {
         ],
       );
     }
-    final isAdmin = user!.role == UserRole.admin && user!.hasAdminClaim;
+    final isAdmin = user!.canAccessAdmin;
     final canList =
-        user!.role == UserRole.landlord || user!.role == UserRole.provider;
+        user!.role == UserRole.landlord ||
+        user!.role == UserRole.provider ||
+        user!.isSuperAdmin;
     final unreadCount = ref.watch(totalUnreadChatsProvider);
     return PopupMenuButton<_AccountAction>(
       tooltip: ListingCopy.profile,
@@ -849,19 +937,7 @@ class _AccountActions extends ConsumerWidget {
   ) async {
     switch (action) {
       case _AccountAction.profile:
-        await showDialog<void>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: Text(user!.name),
-            content: Text('${user!.email}\n${user!.phone}'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text(ListingCopy.cancel),
-              ),
-            ],
-          ),
-        );
+        context.go('/profile');
       case _AccountAction.listings:
         context.go('/provider');
       case _AccountAction.favorites:

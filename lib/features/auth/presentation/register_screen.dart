@@ -9,7 +9,9 @@ import '../data/app_user.dart';
 import 'auth_providers.dart';
 
 class RegisterScreen extends ConsumerStatefulWidget {
-  const RegisterScreen({super.key});
+  const RegisterScreen({this.requestListingRole = false, super.key});
+
+  final bool requestListingRole;
 
   @override
   ConsumerState<RegisterScreen> createState() => _RegisterScreenState();
@@ -21,9 +23,10 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
-  bool _wantsToList = false;
+  late bool _wantsToList = widget.requestListingRole;
   RoleRequest _requestedRole = RoleRequest.landlord;
   bool _isLoading = false;
+  String? _successMessage;
   String? _errorMessage;
 
   @override
@@ -49,17 +52,26 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
 
     setState(() {
       _isLoading = true;
+      _successMessage = null;
       _errorMessage = null;
     });
     ref.read(registrationInProgressProvider.notifier).setInProgress(true);
     try {
-      await ref.read(authRepositoryProvider).register(
+      final result = await ref
+          .read(authRepositoryProvider)
+          .register(
             email: _emailController.text.trim(),
             password: _passwordController.text,
             name: _nameController.text.trim(),
             phone: normalizedPhone,
             roleRequest: _wantsToList ? _requestedRole : null,
           );
+      if (mounted && result.requiresEmailConfirmation) {
+        setState(
+          () => _successMessage =
+              'Check your email to confirm your account before signing in.',
+        );
+      }
     } on AppException catch (error) {
       if (mounted) setState(() => _errorMessage = error.message);
     } finally {
@@ -142,7 +154,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                     onChanged: _isLoading
                         ? null
                         : (value) =>
-                            setState(() => _wantsToList = value ?? false),
+                              setState(() => _wantsToList = value ?? false),
                     controlAffinity: ListTileControlAffinity.leading,
                   ),
                   if (_wantsToList)
@@ -177,6 +189,14 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                       style: theme.textTheme.bodySmall,
                     ),
                   ],
+                  if (_successMessage != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      _successMessage!,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: theme.colorScheme.primary),
+                    ),
+                  ],
                   if (_errorMessage != null) ...[
                     const SizedBox(height: 12),
                     Text(
@@ -197,9 +217,9 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                   ),
                   TextButton(
                     onPressed: () {
-                      final redirect = GoRouterState.of(
-                        context,
-                      ).uri.queryParameters['redirect'];
+                      final redirect = GoRouterState.of(context)
+                          .uri
+                          .queryParameters['redirect'];
                       context.go(
                         Uri(
                           path: '/login',

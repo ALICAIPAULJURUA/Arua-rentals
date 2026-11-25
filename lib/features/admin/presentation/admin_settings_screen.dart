@@ -4,8 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/theme/app_tokens.dart';
 import '../../../core/widgets/admin_widgets.dart';
+import '../../auth/presentation/auth_providers.dart';
 import '../../listings/data/app_config.dart';
 import '../../listings/presentation/app_config_providers.dart';
+import 'admin_copy.dart';
 import 'admin_settings_copy.dart';
 
 class AdminSettingsScreen extends ConsumerWidget {
@@ -13,6 +15,10 @@ class AdminSettingsScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final user = ref.watch(currentAppUserProvider).asData?.value;
+    if (user?.isSuperAdmin != true) {
+      return const Center(child: Text(AdminCopy.accessDeniedMessage));
+    }
     final config = ref.watch(appConfigProvider);
     return config.when(
       loading: () => const AdminLoadingList(itemCount: 3),

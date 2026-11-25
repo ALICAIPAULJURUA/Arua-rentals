@@ -3,7 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/app_tokens.dart';
+import '../../../core/widgets/app_back_button.dart';
 import '../../../core/widgets/empty_view.dart';
+import '../../../core/widgets/fallback_pop_scope.dart';
 import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
 import '../../../core/widgets/app_network_image.dart';
@@ -17,10 +19,15 @@ class ChatInboxScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final rooms = ref.watch(chatRoomsProvider);
-    final uid = ref.watch(authStateProvider).asData?.value?.uid;
-    return Scaffold(
-      appBar: AppBar(title: const Text(ListingCopy.inbox)),
-      body: rooms.when(
+    final uid = ref.watch(supabaseAuthStateProvider).asData?.value?.id;
+    return FallbackPopScope(
+      fallbackRoute: '/',
+      child: Scaffold(
+        appBar: AppBar(
+          leading: const AppBackButton(fallbackRoute: '/'),
+          title: const Text(ListingCopy.inbox),
+        ),
+        body: rooms.when(
         loading: () => const LoadingView(),
         error: (error, stackTrace) => ErrorView(
           message: ListingCopy.chatInboxError,
@@ -76,6 +83,7 @@ class ChatInboxScreen extends ConsumerWidget {
             },
           );
         },
+      ),
       ),
     );
   }

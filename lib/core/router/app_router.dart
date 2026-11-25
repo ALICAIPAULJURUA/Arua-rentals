@@ -1,13 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as supabase;
 
 import '../../features/admin/presentation/admin_dashboard_screen.dart';
 import '../../features/auth/data/app_user.dart';
 import '../../features/auth/presentation/auth_providers.dart';
+import '../../features/auth/presentation/auth_account_screens.dart';
 import '../../features/auth/presentation/forgot_password_screen.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/register_screen.dart';
+import '../../features/auth/presentation/reset_password_screen.dart';
 import '../../features/listings/presentation/provider_listings_screen.dart';
 import '../../features/listings/presentation/public_listings_screen.dart';
 import '../../features/listings/presentation/listing_detail_screen.dart';
@@ -20,7 +23,8 @@ import '../widgets/loading_view.dart';
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   final refreshNotifier = _RouterRefreshNotifier();
-  ref.listen(authStateProvider, (_, _) => refreshNotifier.refresh());
+  ref.listen(supabaseAuthStateProvider, (_, _) => refreshNotifier.refresh());
+  ref.listen(authEventProvider, (_, _) => refreshNotifier.refresh());
   ref.listen(currentAppUserProvider, (_, _) => refreshNotifier.refresh());
 
   final router = GoRouter(
@@ -36,8 +40,17 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         '/login',
         '/register',
         '/forgot-password',
+        '/auth/callback',
       }.contains(path);
-      final authState = ref.read(authStateProvider);
+      final authState = ref.read(supabaseAuthStateProvider);
+      final authEvent = ref.read(authEventProvider).asData?.value;
+      final isPasswordRecovery =
+          authEvent?.event == supabase.AuthChangeEvent.passwordRecovery;
+
+      if (path == '/reset-password' && isPasswordRecovery) return null;
+      if (isPasswordRecovery && path != '/reset-password') {
+        return '/reset-password';
+      }
 
       if (authState.isLoading) {
         if (isPublicPath || isAuthPath) return null;
@@ -75,16 +88,28 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       if (userState.hasError || userState.value == null) {
         if (path == '/admin') return '/access-denied';
         if (isPublicPath) return null;
-        return _loginLocation(state.uri.toString());
+        return path == '/profile-error' ? null : '/profile-error';
       }
 
       final user = userState.value!;
+      if (!user.isActive) {
+        if (isPublicPath || path == '/account-disabled') return null;
+        return '/account-disabled';
+      }
+      if (path == '/account-disabled' ||
+          path == '/profile-error' ||
+          path == '/reset-password' ||
+          path == '/auth/callback') {
+        return _landingPath(ref);
+      }
       final effectiveRole = effectiveRoleFor(
         user.role,
         hasAdminClaim: user.hasAdminClaim,
+        hasSuperAdminClaim: user.hasSuperAdminClaim,
       );
       if (path == '/' &&
-          effectiveRole == UserRole.admin &&
+          (effectiveRole == UserRole.admin ||
+              effectiveRole == UserRole.superAdmin) &&
           state.uri.queryParameters['preview'] != 'true') {
         return '/admin';
       }
@@ -96,12 +121,18 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       }
       if (path == '/') return null;
       if (path == '/provider' &&
-          effectiveRole != UserRole.landlord &&
-          effectiveRole != UserRole.provider) {
+          !canManageOwnListings(
+            user.role,
+            hasSuperAdminClaim: user.hasSuperAdminClaim,
+          )) {
         return '/home';
       }
       if (path == '/admin' &&
-          !canAccessAdmin(user.role, hasAdminClaim: user.hasAdminClaim)) {
+          !canAccessAdmin(
+            user.role,
+            hasAdminClaim: user.hasAdminClaim,
+            hasSuperAdminClaim: user.hasSuperAdminClaim,
+          )) {
         return '/access-denied';
       }
       return null;
@@ -126,11 +157,34 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/login', builder: (context, state) => const LoginScreen()),
       GoRoute(
         path: '/register',
-        builder: (context, state) => const RegisterScreen(),
+        builder: (context, state) => RegisterScreen(
+          requestListingRole:
+              state.uri.queryParameters['requestListingRole'] == 'true',
+        ),
       ),
       GoRoute(
         path: '/forgot-password',
         builder: (context, state) => const ForgotPasswordScreen(),
+      ),
+      GoRoute(
+        path: '/reset-password',
+        builder: (context, state) => const ResetPasswordScreen(),
+      ),
+      GoRoute(
+        path: '/auth/callback',
+        builder: (context, state) => const Scaffold(body: LoadingView()),
+      ),
+      GoRoute(
+        path: '/profile',
+        builder: (context, state) => const AccountProfileScreen(),
+      ),
+      GoRoute(
+        path: '/account-disabled',
+        builder: (context, state) => const AccountDisabledScreen(),
+      ),
+      GoRoute(
+        path: '/profile-error',
+        builder: (context, state) => const ProfileUnavailableScreen(),
       ),
       GoRoute(
         path: '/home',
@@ -182,7 +236,7 @@ CustomTransitionPage<void> _publicPage(LocalKey key, Widget child) =>
 
 String _landingPath(Ref ref) {
   final user = ref.read(currentAppUserProvider).asData?.value;
-  return user?.role == UserRole.admin && user!.hasAdminClaim ? '/admin' : '/';
+  return user?.canAccessAdmin == true ? '/admin' : '/';
 }
 
 String _loginLocation(String returnPath) =>

@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/theme/app_tokens.dart';
 import '../../../core/widgets/admin_widgets.dart';
+import '../../auth/data/app_user.dart';
 import '../../auth/presentation/auth_providers.dart';
 import '../data/admin_records.dart';
 import '../../listings/presentation/admin_listings_screen.dart';
@@ -43,6 +44,7 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
                     selectedIndex: _selectedIndex,
                     stats: stats,
                     name: user?.name ?? AdminCopy.title,
+                    showSettings: user?.isSuperAdmin == true,
                     onSelect: _selectSection,
                     onLogout: () => _logout(context, ref),
                     onPreview: () => context.go('/?preview=true'),
@@ -64,6 +66,7 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
                     name: user?.name ?? AdminCopy.title,
                     email: user?.email ?? AdminCopy.title,
                     pendingListings: stats?.pendingListings ?? 0,
+                    showSettings: user?.isSuperAdmin == true,
                   );
                 } else {
                   _selectSection(index);
@@ -95,6 +98,10 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
   }
 
   void _selectSection(int index) {
+    if (index == 4 &&
+        ref.read(currentAppUserProvider).asData?.value?.isSuperAdmin != true) {
+      return;
+    }
     if (index == _selectedIndex) return;
     setState(() => _selectedIndex = index);
   }
@@ -104,6 +111,7 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
     required String name,
     required String email,
     required int pendingListings,
+    required bool showSettings,
   }) async {
     final selected = await showModalBottomSheet<int>(
       context: context,
@@ -126,11 +134,12 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
               title: const Text(AdminCopy.manageListings),
               onTap: () => Navigator.pop(context, 3),
             ),
-            ListTile(
-              leading: const Icon(Icons.settings_outlined),
-              title: const Text(AdminCopy.settings),
-              onTap: () => Navigator.pop(context, 4),
-            ),
+            if (showSettings)
+              ListTile(
+                leading: const Icon(Icons.settings_outlined),
+                title: const Text(AdminCopy.settings),
+                onTap: () => Navigator.pop(context, 4),
+              ),
             ListTile(
               leading: const Icon(Icons.public_outlined),
               title: const Text(ListingCopy.previewPublicSite),
@@ -155,13 +164,20 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
     }
   }
 
-  Widget _sectionBody() => switch (_selectedIndex) {
-    0 => AdminOverviewScreen(onNavigate: _selectSection),
-    1 => const RoleRequestsScreen(),
-    2 => const AdminUsersScreen(),
-    3 => const AdminListingsScreen(),
-    _ => const AdminSettingsScreen(),
-  };
+  Widget _sectionBody() {
+    final isSuperAdmin =
+        ref.watch(currentAppUserProvider).asData?.value?.isSuperAdmin == true;
+    if (_selectedIndex == 4 && !isSuperAdmin) {
+      return const Center(child: Text(AdminCopy.accessDeniedMessage));
+    }
+    return switch (_selectedIndex) {
+      0 => AdminOverviewScreen(onNavigate: _selectSection),
+      1 => const RoleRequestsScreen(),
+      2 => const AdminUsersScreen(),
+      3 => const AdminListingsScreen(),
+      _ => const AdminSettingsScreen(),
+    };
+  }
 }
 
 class _WideNavigation extends StatelessWidget {
@@ -169,6 +185,7 @@ class _WideNavigation extends StatelessWidget {
     required this.selectedIndex,
     required this.stats,
     required this.name,
+    required this.showSettings,
     required this.onSelect,
     required this.onLogout,
     required this.onPreview,
@@ -177,6 +194,7 @@ class _WideNavigation extends StatelessWidget {
   final int selectedIndex;
   final AdminDashboardStats? stats;
   final String name;
+  final bool showSettings;
   final ValueChanged<int> onSelect;
   final VoidCallback onLogout;
   final VoidCallback onPreview;
@@ -225,11 +243,12 @@ class _WideNavigation extends StatelessWidget {
                 ),
                 label: const Text(AdminCopy.listings),
               ),
-              const NavigationRailDestination(
-                icon: Icon(Icons.settings_outlined),
-                selectedIcon: Icon(Icons.settings),
-                label: Text(AdminSettingsCopy.title),
-              ),
+              if (showSettings)
+                const NavigationRailDestination(
+                  icon: Icon(Icons.settings_outlined),
+                  selectedIcon: Icon(Icons.settings),
+                  label: Text(AdminSettingsCopy.title),
+                ),
             ],
           ),
         ),
@@ -390,19 +409,77 @@ class AdminOverviewScreen extends ConsumerWidget {
   }
 }
 
-class AccessDeniedScreen extends StatelessWidget {
+class AccessDeniedScreen extends ConsumerWidget {
   const AccessDeniedScreen({super.key});
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text(AdminCopy.accessDenied)),
-    body: Center(
-      child: Padding(
-        padding: const EdgeInsets.all(AppSpacing.lg),
-        child: Text(AdminCopy.accessDeniedMessage, textAlign: TextAlign.center),
+  Widget build(BuildContext context, WidgetRef ref) {
+    final user = ref.watch(currentAppUserProvider).asData?.value;
+    final authUser = ref.watch(supabaseAuthStateProvider).asData?.value;
+    final missingSuperAdminClaim =
+        user?.role == UserRole.superAdmin && user?.hasSuperAdminClaim != true;
+    final missingAdminClaim =
+        user?.role == UserRole.admin && user?.hasAdminClaim != true;
+    final message = missingSuperAdminClaim
+        ? ListingCopy.superAdminClaimRequired
+        : missingAdminClaim
+        ? ListingCopy.adminClaimRequired
+        : AdminCopy.accessDeniedMessage;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text(AdminCopy.accessDenied)),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.admin_panel_settings_outlined, size: 48),
+                const SizedBox(height: AppSpacing.md),
+                Text(message, textAlign: TextAlign.center),
+                if (authUser != null) ...[
+                  const SizedBox(height: AppSpacing.md),
+                  FilledButton.icon(
+                    onPressed: () async {
+                      final messenger = ScaffoldMessenger.of(context);
+                      try {
+                        await ref.read(authRepositoryProvider).refreshSession();
+                        ref.invalidate(supabaseAuthStateProvider);
+                        ref.invalidate(currentAppUserProvider);
+                        if (context.mounted) {
+                          messenger.showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Session refreshed. If admin claims were updated, access will be rechecked.',
+                              ),
+                            ),
+                          );
+                        }
+                      } on AppException catch (error) {
+                        messenger.showSnackBar(
+                          SnackBar(content: Text(error.message)),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Refresh session'),
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
+                  OutlinedButton.icon(
+                    onPressed: () => _logout(context, ref),
+                    icon: const Icon(Icons.logout),
+                    label: const Text(AdminCopy.logout),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 Future<void> _logout(BuildContext context, WidgetRef ref) async {

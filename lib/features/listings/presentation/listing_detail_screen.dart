@@ -9,7 +9,9 @@ import '../../../core/constants/ugx_formatter.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/theme/app_tokens.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/widgets/app_back_button.dart';
 import '../../../core/widgets/app_network_image.dart';
+import '../../../core/widgets/fallback_pop_scope.dart';
 import '../../auth/data/app_user.dart';
 import '../../auth/presentation/auth_providers.dart';
 import '../../chat/presentation/chat_providers.dart';
@@ -36,9 +38,15 @@ class ListingDetailScreen extends ConsumerWidget {
     final isSignedIn =
         ref.watch(supabaseAuthStateProvider).asData?.value != null;
     return listingState.when(
-      loading: () => Scaffold(
-        appBar: AppBar(title: const Text(ListingCopy.listingDetails)),
-        body: const Center(child: CircularProgressIndicator()),
+      loading: () => FallbackPopScope(
+        fallbackRoute: '/',
+        child: Scaffold(
+          appBar: AppBar(
+            leading: const AppBackButton(fallbackRoute: '/'),
+            title: const Text(ListingCopy.listingDetails),
+          ),
+          body: const Center(child: CircularProgressIndicator()),
+        ),
       ),
       error: (error, stackTrace) => _unavailable(context),
       data: (listing) {
@@ -55,9 +63,14 @@ class ListingDetailScreen extends ConsumerWidget {
   bool _canViewUnapproved(Listing listing, AppUser? user) =>
       user != null && (listing.ownerId == user.uid || user.canAccessAdmin);
 
-  Widget _unavailable(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text(ListingCopy.listingDetails)),
-    body: Center(
+  Widget _unavailable(BuildContext context) => FallbackPopScope(
+    fallbackRoute: '/',
+    child: Scaffold(
+      appBar: AppBar(
+        leading: const AppBackButton(fallbackRoute: '/'),
+        title: const Text(ListingCopy.listingDetails),
+      ),
+      body: Center(
       child: Padding(
         padding: const EdgeInsets.all(AppSpacing.lg),
         child: Column(
@@ -83,6 +96,7 @@ class ListingDetailScreen extends ConsumerWidget {
           ],
         ),
       ),
+      ),
     ),
   );
 
@@ -99,15 +113,18 @@ class ListingDetailScreen extends ConsumerWidget {
     return Title(
       title: listing.title,
       color: AppTheme.primaryTextColor,
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(
-            listing.title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+      child: FallbackPopScope(
+        fallbackRoute: '/',
+        child: Scaffold(
+          appBar: AppBar(
+            leading: const AppBackButton(fallbackRoute: '/'),
+            title: Text(
+              listing.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            actions: [FavoriteButton(listing: listing)],
           ),
-          actions: [FavoriteButton(listing: listing)],
-        ),
         body: SafeArea(
           bottom: false,
           child: Center(
@@ -252,6 +269,7 @@ class ListingDetailScreen extends ConsumerWidget {
           listing: listing,
           isSignedIn: isSignedIn,
           returnPath: GoRouterState.of(context).uri.toString(),
+        ),
         ),
       ),
     );

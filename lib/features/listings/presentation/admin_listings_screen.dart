@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -10,7 +9,7 @@ import '../../../core/theme/app_tokens.dart';
 import '../../../core/widgets/admin_widgets.dart';
 import '../../../core/widgets/app_network_image.dart';
 import '../data/listing.dart';
-import '../data/listings_repository.dart';
+import '../data/supabase_listings_repository.dart';
 import 'listing_copy.dart';
 import 'listing_form_screen.dart';
 import 'listings_providers.dart';
@@ -27,12 +26,12 @@ class AdminListingsScreen extends ConsumerStatefulWidget {
 class _AdminListingsScreenState extends ConsumerState<AdminListingsScreen> {
   static const _pageSize = 20;
   final _searchController = TextEditingController();
-  late Future<ListingPage> _pageFuture;
+  late Future<SupabaseListingPage> _pageFuture;
   final _loadedListings = <Listing>[];
   Timer? _debounce;
   ListingStatus? _status;
   String _keyword = '';
-  DocumentSnapshot<Map<String, dynamic>>? _nextCursor;
+  ListingCursor? _nextCursor;
   bool _isLoadingMore = false;
   bool _hasMore = true;
   String? _busyId;
@@ -53,7 +52,7 @@ class _AdminListingsScreenState extends ConsumerState<AdminListingsScreen> {
   void _loadPage() {
     _pageFuture = ref
         .read(listingsRepositoryProvider)
-        .getAdminListings(status: _status, keyword: _keyword);
+        .getAdminListings(status: _status, keyword: _keyword, limit: _pageSize);
   }
 
   void _resetPages() {
@@ -137,7 +136,7 @@ class _AdminListingsScreenState extends ConsumerState<AdminListingsScreen> {
       Expanded(
         child: RefreshIndicator(
           onRefresh: _refresh,
-          child: FutureBuilder<ListingPage>(
+          child: FutureBuilder<SupabaseListingPage>(
             future: _pageFuture,
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) {
@@ -177,7 +176,7 @@ class _AdminListingsScreenState extends ConsumerState<AdminListingsScreen> {
                 );
               }
               final hasNextPage = _loadedListings.isEmpty
-                  ? page.items.length == _pageSize
+                  ? page.nextCursor != null
                   : _hasMore;
               return ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
@@ -231,8 +230,8 @@ class _AdminListingsScreenState extends ConsumerState<AdminListingsScreen> {
     });
   }
 
-  Future<void> _loadMore(ListingPage currentPage) async {
-    final cursor = _nextCursor ?? currentPage.lastDocument;
+  Future<void> _loadMore(SupabaseListingPage currentPage) async {
+    final cursor = _nextCursor ?? currentPage.nextCursor;
     if (cursor == null || _isLoadingMore) return;
     setState(() {
       if (_loadedListings.isEmpty) _loadedListings.addAll(currentPage.items);
@@ -245,12 +244,13 @@ class _AdminListingsScreenState extends ConsumerState<AdminListingsScreen> {
             status: _status,
             keyword: _keyword,
             startAfter: cursor,
+            limit: _pageSize,
           );
       if (!mounted) return;
       setState(() {
         _loadedListings.addAll(page.items);
-        _nextCursor = page.lastDocument;
-        _hasMore = page.items.length == _pageSize;
+        _nextCursor = page.nextCursor;
+        _hasMore = page.nextCursor != null;
       });
     } on AppException catch (error) {
       _showMessage(error.message);

@@ -251,8 +251,8 @@ class SupabaseListingsRepository {
         ratingCount: existing.ratingCount,
         isFeatured: existing.isFeatured,
         ownerVerified: existing.ownerVerified,
-        status: isAdmin ? existing.status : ListingStatus.pending,
-        clearRejectionReason: !isAdmin,
+        status: existing.status,
+        rejectionReason: existing.rejectionReason,
       );
       final data = _toSupabaseRow(
         updated,
@@ -267,18 +267,40 @@ class SupabaseListingsRepository {
         isFeatured: existing.isFeatured,
         includeProtectedFields: isAdmin,
       )..remove('created_at');
-      if (!isAdmin) data['rejection_reason'] = null;
-      await _client.rpc(
-        'update_listing_with_images',
-        params: {
-          'p_listing_id': listing.id,
-          'p_listing_data': data,
-          'p_images': _imageMetadata(
-            listing.imageUrls,
-            listing.imageStoragePaths,
-          ),
-        },
+      // Status/rejection are controlled by trusted admin workflow; preserve existing values.
+
+      final imageMetadata = _imageMetadata(
+        listing.imageUrls,
+        listing.imageStoragePaths,
       );
+      final imagesChanged = !_sameImageMetadata(existing, imageMetadata);
+      if (!imagesChanged) {
+        await _client
+            .from('listings')
+            .update(data)
+            .eq('id', listing.id)
+            .select('id')
+            .maybeSingle();
+        return updated;
+      }
+
+      try {
+        await _client.rpc(
+          'update_listing_with_images',
+          params: {
+            'p_listing_id': listing.id,
+            'p_listing_data': data,
+            'p_images': imageMetadata,
+          },
+        );
+      } on PostgrestException catch (error) {
+        if (!_isMissingFunctionError(error)) rethrow;
+        await _updateListingWithImagesDirect(
+          listingId: listing.id,
+          listingData: data,
+          images: imageMetadata,
+        );
+      }
       return updated;
     } on PostgrestException catch (error) {
       throw _mapDatabaseError(error, 'update this listing');
@@ -420,10 +442,73 @@ class SupabaseListingsRepository {
   ) async {
     final images = _imageMetadata(imageUrls, storagePaths);
     if (images.isEmpty) return;
-    await _client.rpc(
-      'replace_listing_images',
-      params: {'p_listing_id': listingId, 'p_images': images},
+    try {
+      await _client.rpc(
+        'replace_listing_images',
+        params: {'p_listing_id': listingId, 'p_images': images},
+      );
+    } on PostgrestException catch (error) {
+      if (!_isMissingFunctionError(error)) rethrow;
+      await _replaceImagesDirect(listingId, images);
+    }
+  }
+
+  Future<void> _updateListingWithImagesDirect({
+    required String listingId,
+    required Map<String, dynamic> listingData,
+    required List<Map<String, dynamic>> images,
+  }) async {
+    await _client
+        .from('listings')
+        .update(listingData)
+        .eq('id', listingId)
+        .select('id')
+        .maybeSingle();
+    await _replaceImagesDirect(listingId, images);
+  }
+
+  Future<void> _replaceImagesDirect(
+    String listingId,
+    List<Map<String, dynamic>> images,
+  ) async {
+    await _client.from('listing_images').delete().eq('listing_id', listingId);
+    if (images.isEmpty) return;
+    final rows = [
+      for (final image in images)
+        {
+          'listing_id': listingId,
+          'image_url': image['image_url'],
+          'storage_path': image['storage_path'],
+          'display_order': image['display_order'],
+        },
+    ];
+    await _client.from('listing_images').insert(rows);
+  }
+
+  bool _sameImageMetadata(Listing existing, List<Map<String, dynamic>> next) {
+    final current = _imageMetadata(
+      existing.imageUrls,
+      existing.imageStoragePaths,
     );
+    if (current.length != next.length) return false;
+    for (var index = 0; index < current.length; index++) {
+      final a = current[index];
+      final b = next[index];
+      if (a['image_url'] != b['image_url'] ||
+          a['storage_path'] != b['storage_path'] ||
+          a['display_order'] != b['display_order']) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool _isMissingFunctionError(PostgrestException error) {
+    final code = error.code?.trim();
+    if (code == '42883' || code == 'PGRST202') return true;
+    final message = '${error.message} ${error.details ?? ''}'.toLowerCase();
+    return message.contains('could not find the function') ||
+        message.contains('function') && message.contains('does not exist');
   }
 
   List<Map<String, dynamic>> _imageMetadata(

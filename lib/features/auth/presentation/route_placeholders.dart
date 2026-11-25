@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/errors/app_exception.dart';
+import '../../../core/router/role_access.dart';
 import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
 import '../data/app_user.dart';
@@ -47,7 +48,7 @@ class HomePlaceholderScreen extends ConsumerWidget {
                   Text('Welcome, ${user.name}'),
                   const SizedBox(height: 8),
                   Text(
-                    'Account role: ${user.role == UserRole.admin && !user.hasAdminClaim ? UserRole.tenant.name : user.role.name}',
+                    'Account role: ${effectiveRoleFor(user.role, hasAdminClaim: user.hasAdminClaim, hasSuperAdminClaim: user.hasSuperAdminClaim).label}',
                   ),
                   if (user.roleRequest != null) ...[
                     const SizedBox(height: 8),
@@ -61,7 +62,7 @@ class HomePlaceholderScreen extends ConsumerWidget {
                       child: const Text('Open provider dashboard'),
                     ),
                   ],
-                  if (user.role == UserRole.admin && user.hasAdminClaim) ...[
+                  if (user.canAccessAdmin) ...[
                     const SizedBox(height: 16),
                     FilledButton(
                       onPressed: () => context.go('/admin'),

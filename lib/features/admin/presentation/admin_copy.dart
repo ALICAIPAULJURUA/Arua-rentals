@@ -47,20 +47,17 @@ abstract final class AdminCopy {
   static const unverified = 'Not verified';
   static const changeRole = 'Change role';
   static const editProfile = 'Edit profile';
-  static const deleteProfile = 'Delete profile';
   static const profileUpdated = 'Update this profile?';
-  static const deleteProfileQuestion = 'Delete this user profile?';
-  static const deleteProfileWarning =
-      'This removes the Firestore profile only. The sign-in account will remain active.';
   static const profileSaved = 'User profile updated.';
-  static const profileDeleted = 'User profile deleted.';
   static const invalidProfile = 'Enter a name and valid Ugandan phone number.';
-  static const roleManagedByBootstrap = 'Admin role is bootstrap-managed';
+  static const grantAdminAccess = 'Grant administrator access';
+  static const revokeAdminAccess = 'Revoke administrator access';
   static const name = 'Name';
   static const phone = 'Phone';
   static const role = 'Role';
   static const emailAndPhone = 'Email / phone';
   static const actions = 'Actions';
+  static const accountStatus = 'Account status';
   static const requestedRoleLabel = 'Requested role';
   static const searchUsers = 'Search by name or email';
   static const clearSearch = 'Clear search';

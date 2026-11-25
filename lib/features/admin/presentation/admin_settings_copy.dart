@@ -11,7 +11,7 @@ abstract final class AdminSettingsCopy {
   static const seedDefaultsDescription =
       'Restore the starter list of listing categories and Arua areas.';
   static const settingsSubtitle =
-      'Keep the categories and areas available to listing owners up to date.';
+      'Super admins manage the categories and areas available to listing owners.';
   static const active = 'Active';
   static const inactive = 'Inactive';
   static const retry = 'Retry';

@@ -2,6 +2,14 @@
 
 > Save this file in your repo as `.github/copilot-instructions.md`. Copilot reads it automatically in VS Code / GitHub. Keep it up to date as decisions change.
 
+> **Current architecture override:** Supabase Auth, Postgres, and Storage are the
+> application's active backend. Do not add Firebase SDKs, initialization,
+> repositories, platform configuration, or new Firebase-backed features. The
+> Firebase-specific stack and implementation guidance below is historical; keep
+> the Firebase project/data untouched until its source data has been exported,
+> imported, and reconciled. The current repository does not yet include that
+> completed data migration.
+
 ---
 
 ## 1. Product Overview
@@ -47,22 +55,25 @@ Core value: *find a trusted, verified property or service in Arua quickly, conta
 
 ## 3. Roles & Access Control
 
-Roles: `tenant` (default), `landlord`, `provider`, `admin`.
+Roles: `tenant` (default), `landlord`, `provider`, `admin`, `super_admin`.
 
 **Critical security rules (the original design got these wrong):**
 
 1. **The client must never be able to choose or change its own privileged role.** Registration UI may let a user say "I want to list properties/services", but this creates `role: 'tenant'` plus `roleRequest: 'landlord' | 'provider'`. An admin approves it, which sets the role.
-2. **Admin is assigned only via Firebase Admin SDK as a custom claim** (`request.auth.token.admin == true`), set from a trusted script or Cloud Function. Not by editing a field a user could write.
-3. **Role checks in the UI are for UX only.** Real enforcement is in **Firestore & Storage Security Rules** and Cloud Functions.
-4. A user may only read/write **their own** `users/{uid}` document and may **not** modify `role`, `isVerified`, `ratingAvg`, or `ratingCount`.
+2. **Admin and super-admin access are assigned only by trusted server-side Supabase Auth Admin API calls** (`app_metadata.admin` / `app_metadata.super_admin`). Never let a client assign its own privileged role or claim.
+3. **Super admins alone** may grant/revoke administrator access and manage global listing categories and areas. Ordinary administrators retain moderation and role-request duties.
+4. **Role checks in the UI are for UX only.** Real enforcement is in **Supabase RLS policies and trusted Edge Functions**.
+5. A user may only read/write **their own** `profiles/{uid}` row and may **not** modify `role`, `account_status`, `is_verified`, or privileged Auth metadata.
 
-| Capability | Tenant | Landlord/Provider | Admin |
-|---|---|---|---|
-| Browse approved listings | ✅ | ✅ | ✅ |
-| Chat, favorite, rate | ✅ | ✅ | ✅ |
-| Create/edit/delete **own** listings | ❌ | ✅ (new/edited → `pending`) | ✅ |
-| Approve/reject/delete any listing | ❌ | ❌ | ✅ |
-| Approve role requests, view stats | ❌ | ❌ | ✅ |
+| Capability | Tenant | Landlord/Provider | Admin | Super admin |
+|---|---|---|---|---|
+| Browse approved listings | ✅ | ✅ | ✅ | ✅ |
+| Chat, favorite, rate | ✅ | ✅ | ✅ | ✅ |
+| Create/edit/delete **own** listings | ❌ | ✅ (new/edited → `pending`) | ✅ | ✅ |
+| Approve/reject/delete any listing | ❌ | ❌ | ✅ | ✅ |
+| Approve role requests, view stats | ❌ | ❌ | ✅ | ✅ |
+| Grant/revoke administrator access | ❌ | ❌ | ❌ | ✅ |
+| Manage global listing categories and areas | ❌ | ❌ | ❌ | ✅ |
 
 ---
 
@@ -131,7 +142,7 @@ Each feature: `data/` (models, repository implementation), `domain/` (repository
 Use `snake_case`-free, camelCase field names. All documents have `createdAt` and `updatedAt` (server timestamps).
 
 **`users/{uid}`**
-`name, email, phone, photoUrl, role ('tenant'|'landlord'|'provider'|'admin'), roleRequest?, isVerified, fcmTokens[], createdAt`
+`full_name, email, phone, avatar_url, role ('tenant'|'landlord'|'provider'|'admin'|'super_admin'), account_status, is_verified, fcm_tokens, created_at`
 
 **`listings/{listingId}`**
 `ownerId, ownerName, ownerPhone, type ('property'|'service'), category, title, titleLower, description, priceUgx (int), priceUnit ('month'|'job'|'hour'|'fixed'), area, address?, geo? (GeoPoint), bedrooms?, bathrooms?, amenities[], imageUrls[], thumbnailUrl, videoUrl?, status ('pending'|'approved'|'rejected'), rejectionReason?, ratingAvg (number), ratingCount (int), searchKeywords[], isFeatured, createdAt, updatedAt`
@@ -258,7 +269,7 @@ Copilot: generate `firestore.rules` and `storage.rules` that enforce at least:
 3. `firestore.rules` / `storage.rules` + emulator tests for users/listings.
 4. Listings model + repository + paginated home grid + search/filter + detail page.
 5. Provider dashboard + upload/edit listing (image compress, video limit, progress).
-6. Admin moderation (approve/reject with reason, role requests) + admin custom-claim script.
+6. Admin moderation (approve/reject with reason, role requests) + trusted Supabase Auth claim provisioning.
 7. Contact buttons (call/WhatsApp) + chat (deterministic rooms, unread counts) + FCM.
 8. Favorites, reports, ratings (with Cloud Function aggregation).
 9. Payments (Cloud Functions + webhook + verification) after scope decision in §8.
